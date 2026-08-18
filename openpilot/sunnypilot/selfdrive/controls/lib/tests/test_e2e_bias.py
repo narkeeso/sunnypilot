@@ -1,0 +1,106 @@
+import json
+import unittest
+
+from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController
+
+
+class MockParams:
+  def __init__(self, values=None):
+    self.values = values or {}
+
+  def get(self, key):
+    return self.values.get(key)
+
+  def put(self, key, value):
+    self.values[key] = value
+
+
+def make_controller(bias, params_values=None, strength=None):
+  values = dict(params_values or {})
+  if strength is not None:
+    values.setdefault("LongitudinalE2EBias", str(strength))
+  c = E2EBiasController(params=MockParams(values))
+  c._e2e_bias = bias
+  return c
+
+
+class TestE2EBiasController(unittest.TestCase):
+  def test_full_bias_above_fade_window(self):
+    c = make_controller(bias=0.15)
+    self.assertAlmostEqual(c.apply(0.5), 0.65, places=6)
+
+  def test_no_bias_at_2x_braking(self):
+    c = make_controller(bias=0.15)
+    self.assertAlmostEqual(c.apply(-0.3), -0.3, places=6)
+
+  def test_linear_fade_midpoint(self):
+    c = make_controller(bias=0.15)
+    # at -1.5 * bias the blend width is a quarter through, so 1/4 of the bias is added
+    self.assertAlmostEqual(c.apply(-0.225), -0.225 + 0.15 * 0.25, places=6)
+
+  def test_zero_bias_is_noop(self):
+    c = make_controller(bias=0.0)
+    self.assertAlmostEqual(c.apply(-0.3), -0.3, places=6)
+    self.assertAlmostEqual(c.apply(0.5), 0.5, places=6)
+
+  def test_negative_bias_subtracts(self):
+    c = make_controller(bias=-0.1)
+    self.assertAlmostEqual(c.apply(0.5), 0.4, places=6)
+
+  def test_negative_bias_never_touches_braking(self):
+    c = make_controller(bias=-0.1)
+    self.assertAlmostEqual(c.apply(-0.2), -0.2, places=6)
+
+  def test_param_refresh_reads_strength(self):
+    c = make_controller(bias=0.0, params_values={"LongitudinalE2EBias": "20"})
+    c._tick = c.REFRESH_PERIOD - 1
+    self.assertAlmostEqual(c.apply(0.5), 0.7, places=6)
+
+  def test_strength_conversion(self):
+    c = E2EBiasController(params=MockParams())
+    self.assertAlmostEqual(c._strength_to_bias("20"), 0.2, places=6)
+    self.assertAlmostEqual(c._strength_to_bias("-20"), -0.2, places=6)
+    self.assertAlmostEqual(c._strength_to_bias("0"), 0.0, places=6)
+    self.assertAlmostEqual(c._strength_to_bias("5"), 0.05, places=6)
+
+  def test_strength_clamped(self):
+    c = E2EBiasController(params=MockParams())
+    self.assertAlmostEqual(c._strength_to_bias("50"), 0.2, places=6)
+    self.assertAlmostEqual(c._strength_to_bias("-50"), -0.2, places=6)
+    self.assertAlmostEqual(c._strength_to_bias("garbage"), 0.0, places=6)
+    self.assertAlmostEqual(c._strength_to_bias(None), 0.0, places=6)
+
+  def test_model_change_resets_bias_to_default(self):
+    bundle = json.dumps({"internalName": "modelA", "generation": 1})
+    c = make_controller(bias=0.2, params_values={"ModelManager_ActiveBundle": bundle}, strength=20)
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    assert c._params.values["LongitudinalE2EBias"] == "0"
+    assert c._params.values["LongitudinalE2EBiasTunedFor"] == "modelA:1"
+    assert c._e2e_bias == DEFAULT_BIAS
+
+  def test_same_model_keeps_bias(self):
+    bundle = json.dumps({"internalName": "modelA", "generation": 1})
+    c = make_controller(bias=0.2, params_values={
+      "ModelManager_ActiveBundle": bundle,
+      "LongitudinalE2EBiasTunedFor": "modelA:1",
+    }, strength=20)
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    assert c._params.values["LongitudinalE2EBias"] == "20"
+
+  def test_missing_bundle_no_reset(self):
+    c = make_controller(bias=0.2, strength=20)
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    assert c._params.values["LongitudinalE2EBias"] == "20"
+
+  def test_invalid_bundle_no_reset(self):
+    c = make_controller(bias=0.2, params_values={"ModelManager_ActiveBundle": "{not json"}, strength=20)
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    assert c._params.values["LongitudinalE2EBias"] == "20"
+
+
+if __name__ == "__main__":
+  unittest.main()

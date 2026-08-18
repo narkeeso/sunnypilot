@@ -24,6 +24,18 @@ sections:
     - $ref: '#/macros/longitudinal'
     enablement:
     - $ref: '#/macros/longitudinal'
+  - key: LongitudinalE2EBias
+    widget: option
+    title: E2E Speed Bias
+    description: "An alternative to Dynamic Experimental Control (needs experimental mode, DEC off). Tunes how strongly
+      E2E holds your set speed: positive strength keeps the car closer to your set cruise when the model would ease off;
+      negative lets the model drive its own pace. 0 is neutral. Blends out before braking, so stops and following traffic
+      are unchanged."
+    enablement:
+    - $ref: '#/macros/e2e_longitudinal'
+    min: -20
+    max: 20
+    step: 1
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal

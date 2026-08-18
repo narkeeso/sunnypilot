@@ -15,6 +15,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
+from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import E2EBiasController
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -74,6 +75,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+    self._e2e_bias = E2EBiasController()
 
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
@@ -137,6 +139,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
+    output_a_target_e2e = self._e2e_bias.apply(output_a_target_e2e)
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     is_e2e = self.is_e2e(sm)
