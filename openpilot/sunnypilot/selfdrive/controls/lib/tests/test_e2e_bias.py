@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController
+from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController, strength_to_mpc_ramp
 
 
 class MockParams:
@@ -88,6 +88,40 @@ class TestE2EBiasController(unittest.TestCase):
     self.assertAlmostEqual(c._strength_to_bias("-50"), -0.2, places=6)
     self.assertAlmostEqual(c._strength_to_bias("garbage"), 0.0, places=6)
     self.assertAlmostEqual(c._strength_to_bias(None), 0.0, places=6)
+
+  def test_mpc_ramp_off_at_zero(self):
+    assert strength_to_mpc_ramp("0") is None
+    assert strength_to_mpc_ramp(None) is None
+    assert strength_to_mpc_ramp("garbage") is None
+
+  def test_mpc_ramp_scales_with_strength(self):
+    high = strength_to_mpc_ramp("20")
+    low = strength_to_mpc_ramp("1")
+    assert high is not None and low is not None
+    assert high < low
+    self.assertAlmostEqual(high, 0.4, places=6)
+    self.assertAlmostEqual(low, 2.5, places=6)
+
+  def test_apply_mpc_smooths_braking(self):
+    c = E2EBiasController(params=MockParams())
+    c._mpc_ramp = 0.4
+    # mpc wants -0.3, previous output was -0.05: ramped to -0.05 - 0.4*dt
+    self.assertAlmostEqual(c.apply_mpc(-0.3, -0.05, dt=0.05), -0.05 - 0.4 * 0.05, places=6)
+
+  def test_apply_mpc_emergency_bypasses(self):
+    c = E2EBiasController(params=MockParams())
+    c._mpc_ramp = 0.8
+    self.assertAlmostEqual(c.apply_mpc(-1.0, -0.05, dt=0.05, bypass=True), -1.0, places=6)
+
+  def test_apply_mpc_no_ramp_is_stock(self):
+    c = E2EBiasController(params=MockParams())
+    c._mpc_ramp = None
+    self.assertAlmostEqual(c.apply_mpc(-0.3, -0.05, dt=0.05), -0.3, places=6)
+
+  def test_apply_mpc_release_not_limited(self):
+    c = E2EBiasController(params=MockParams())
+    c._mpc_ramp = 0.8
+    self.assertAlmostEqual(c.apply_mpc(-0.1, -0.3, dt=0.05), -0.1, places=6)
 
   def test_model_change_resets_bias_to_default(self):
     bundle = json.dumps({"internalName": "modelA", "generation": 1})

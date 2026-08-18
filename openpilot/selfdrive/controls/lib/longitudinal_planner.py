@@ -71,6 +71,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_cruise = 0.0
     self.output_a_target = 0.0
     self.output_should_stop = False
+    self.a_mpc_prev = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -143,6 +144,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     is_e2e = self.is_e2e(sm)
+
+    if is_e2e:
+      output_a_target_mpc = self._e2e_bias.apply_mpc(output_a_target_mpc, self.a_mpc_prev, self.dt,
+                                                     bypass=(self.fcw or output_should_stop_mpc))
+    self.a_mpc_prev = output_a_target_mpc
 
     self.a_cruise = get_cruise_accel(is_e2e, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
