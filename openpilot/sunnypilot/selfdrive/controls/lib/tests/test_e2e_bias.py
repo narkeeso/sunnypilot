@@ -35,8 +35,27 @@ class TestE2EBiasController(unittest.TestCase):
 
   def test_linear_fade_midpoint(self):
     c = make_controller(bias=0.15)
-    # at -1.5 * bias the blend width is a quarter through, so 1/4 of the bias is added
-    self.assertAlmostEqual(c.apply(-0.225), -0.225 + 0.15 * 0.25, places=6)
+    # at -1.5 * bias the blend is halfway through, so half of the bias is added
+    self.assertAlmostEqual(c.apply(-0.225), -0.225 + 0.15 * 0.5, places=6)
+
+  def test_full_bias_at_minus_bias(self):
+    c = make_controller(bias=0.15)
+    self.assertAlmostEqual(c.apply(-0.15), 0.0, places=6)
+
+  def test_zero_bias_at_minus_2bias(self):
+    c = make_controller(bias=0.13)
+    self.assertAlmostEqual(c.apply(-0.26), -0.26, places=6)
+
+  def test_fade_width_scales_with_bias(self):
+    # stronger bias must reach full hold deeper into the bleed region
+    strong = make_controller(bias=0.2)
+    weak = make_controller(bias=0.05)
+    # at -0.1 bleed: strong is still inside its full window, weak is already fully faded
+    self.assertAlmostEqual(strong.apply(-0.1), -0.1 + 0.2, places=6)
+    self.assertAlmostEqual(weak.apply(-0.1), -0.1, places=6)
+    # at the same half-fade point relative to each: -1.5*bias
+    self.assertAlmostEqual(strong.apply(-0.3), -0.3 + 0.1, places=6)
+    self.assertAlmostEqual(weak.apply(-0.075), -0.075 + 0.025, places=6)
 
   def test_zero_bias_is_noop(self):
     c = make_controller(bias=0.0)
@@ -75,7 +94,17 @@ class TestE2EBiasController(unittest.TestCase):
     c = make_controller(bias=0.2, params_values={"ModelManager_ActiveBundle": bundle}, strength=20)
     c._tick = c.REFRESH_PERIOD - 1
     c.apply(0.5)
-    assert c._params.values["LongitudinalE2EBias"] == "0"
+    assert c._params.values["LongitudinalE2EBias"] == 0
+    assert c._params.values["LongitudinalE2EBiasTunedFor"] == "modelA:1"
+    assert c._e2e_bias == DEFAULT_BIAS
+
+  def test_model_change_resets_bias_with_parsed_dict(self):
+    # real Params.get() returns JSON-type keys already-parsed (dict), not a string
+    bundle = {"internalName": "modelA", "generation": 1}
+    c = make_controller(bias=0.2, params_values={"ModelManager_ActiveBundle": bundle}, strength=20)
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    assert c._params.values["LongitudinalE2EBias"] == 0
     assert c._params.values["LongitudinalE2EBiasTunedFor"] == "modelA:1"
     assert c._e2e_bias == DEFAULT_BIAS
 
