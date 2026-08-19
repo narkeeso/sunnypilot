@@ -105,23 +105,27 @@ class TestE2EBiasController(unittest.TestCase):
   def test_apply_mpc_smooths_braking(self):
     c = E2EBiasController(params=MockParams())
     c._mpc_ramp = 0.4
+    c._a_mpc_prev = -0.05
     # mpc wants -0.3, previous output was -0.05: ramped to -0.05 - 0.4*dt
-    self.assertAlmostEqual(c.apply_mpc(-0.3, -0.05, dt=0.05), -0.05 - 0.4 * 0.05, places=6)
+    self.assertAlmostEqual(c.apply_mpc(-0.3, dt=0.05), -0.05 - 0.4 * 0.05, places=6)
 
   def test_apply_mpc_emergency_bypasses(self):
     c = E2EBiasController(params=MockParams())
     c._mpc_ramp = 0.8
-    self.assertAlmostEqual(c.apply_mpc(-1.0, -0.05, dt=0.05, bypass=True), -1.0, places=6)
+    c._a_mpc_prev = -0.05
+    self.assertAlmostEqual(c.apply_mpc(-1.0, dt=0.05, bypass=True), -1.0, places=6)
 
   def test_apply_mpc_no_ramp_is_stock(self):
     c = E2EBiasController(params=MockParams())
     c._mpc_ramp = None
-    self.assertAlmostEqual(c.apply_mpc(-0.3, -0.05, dt=0.05), -0.3, places=6)
+    c._a_mpc_prev = -0.05
+    self.assertAlmostEqual(c.apply_mpc(-0.3, dt=0.05), -0.3, places=6)
 
   def test_apply_mpc_release_not_limited(self):
     c = E2EBiasController(params=MockParams())
     c._mpc_ramp = 0.8
-    self.assertAlmostEqual(c.apply_mpc(-0.1, -0.3, dt=0.05), -0.1, places=6)
+    c._a_mpc_prev = -0.3
+    self.assertAlmostEqual(c.apply_mpc(-0.1, dt=0.05), -0.1, places=6)
 
   def test_lead_gate_far_and_no_lead(self):
     assert lead_gate(None) == 1.0
