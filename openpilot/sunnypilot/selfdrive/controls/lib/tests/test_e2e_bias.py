@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController, lead_gate, strength_to_mpc_ramp
+from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController, bleed_factor, lead_gate, strength_to_mpc_ramp
 
 
 class MockParams:
@@ -143,8 +143,39 @@ class TestE2EBiasController(unittest.TestCase):
 
   def test_bias_fades_with_lead_headway(self):
     c = make_controller(bias=0.15)
-    # headway 1.75s -> half bias
-    self.assertAlmostEqual(c.apply(0.5, lead_drel=52.5, v_ego=30.0), 0.5 + 0.15 * 0.5, places=6)
+    # headway 1.75s: hold faded to half AND bleed active -> 0.5 + 0.15*(0.5 - 1.0)
+    self.assertAlmostEqual(c.apply(0.5, lead_drel=52.5, v_ego=30.0), 0.5 + 0.15 * (0.5 - 1.0), places=6)
+
+  def test_bleed_factor_follow_band(self):
+    assert bleed_factor(None) == 0.0
+    assert bleed_factor(float("inf")) == 0.0
+    self.assertAlmostEqual(bleed_factor(1.5), 1.0, places=6)
+    self.assertAlmostEqual(bleed_factor(2.0), 1.0, places=6)
+    self.assertAlmostEqual(bleed_factor(0.5), 0.0, places=6)
+    self.assertAlmostEqual(bleed_factor(3.5), 0.0, places=6)
+
+  def test_bleed_eases_off_when_following(self):
+    c = make_controller(bias=0.1)
+    # following a lead at 2s headway, model cruising (~0) -> output pushed below model
+    out = c.apply(0.0, lead_drel=60.0, v_ego=30.0)
+    assert out < 0.0, f"expected bleed to push below 0, got {out}"
+    # far / no lead -> no bleed (hold applies)
+    self.assertAlmostEqual(c.apply(0.0), 0.0 + 0.1, places=6)
+    self.assertAlmostEqual(c.apply(0.0, lead_drel=120.0, v_ego=30.0), 0.0 + 0.1, places=6)
+
+  def test_bleed_steps_out_of_braking(self):
+    c = make_controller(bias=0.1)
+    # model braking hard -> bleed fades, never stacks decel
+    out = c.apply(-0.3, lead_drel=60.0, v_ego=30.0)
+    # at -0.3 the model-braking fade kills the bleed; bias fade also at zero -> -0.3
+    self.assertAlmostEqual(out, -0.3, places=6)
+
+  def test_negative_bias_no_bleed(self):
+    c = make_controller(bias=-0.1)
+    # no lead -> full negative bias, no bleed component
+    self.assertAlmostEqual(c.apply(0.0), -0.1, places=6)
+    # the lead-gate stands down negative bias too on approach (2s headway)
+    self.assertAlmostEqual(c.apply(0.0, lead_drel=60.0, v_ego=30.0), -0.1 * 2.0 / 3.0, places=6)
 
   def test_model_change_resets_bias_to_default(self):
     bundle = json.dumps({"internalName": "modelA", "generation": 1})
