@@ -15,17 +15,13 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
-from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import E2EBiasController
+from openpilot.sunnypilot.selfdrive.controls.lib.tuning import cruise_tuning
+from openpilot.sunnypilot.selfdrive.controls.lib.tuning.e2e_bias import E2EBiasController
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
-A_CRUISE_MIN = -1.2
-A_CRUISE_BLEED_MIN = -0.3
-A_CRUISE_SCALE = 0.15
-A_CRUISE_RAMP_OS = 2.5     # m/s over set speed: above this, decel authority ramps up
-A_CRUISE_RAMP_GAIN = 0.8   # extra m/s^2 per m/s of overspeed past A_CRUISE_RAMP_OS
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
@@ -53,14 +49,9 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
       coast_limit = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [max_accel, clipped_accel_coast])
       max_accel = min(max_accel, coast_limit)
 
-  # Scale the set-speed approach decel with overspeed. Small reductions (driver
-  # lowering the set speed a few mph) coast gently; large overspeeds (downhill)
-  # ramp to full authority quickly so the car doesn't run away on a descent —
-  # a pure linear scale (0.15 * overspeed) only reached -1.2 at 29 kph over.
-  overspeed = max(v_ego - v_cruise, 0.0)
-  decel_cap = A_CRUISE_SCALE * overspeed + A_CRUISE_RAMP_GAIN * max(overspeed - A_CRUISE_RAMP_OS, 0.0)
-  decel_min = float(np.clip(-decel_cap, A_CRUISE_MIN, A_CRUISE_BLEED_MIN))
-  target_accel = np.clip(v_cruise - v_ego, decel_min, max_accel)
+  # Personal tuning: overspeed-scaled decel floor (gentle for small set-speed
+  # reductions, full authority on descents) — see cruise_tuning.py.
+  target_accel = np.clip(v_cruise - v_ego, cruise_tuning.decel_min(v_ego, v_cruise), max_accel)
   if not e2e:
     j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
     target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
@@ -82,7 +73,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_cruise = 0.0
     self.output_a_target = 0.0
     self.output_should_stop = False
-    self.a_mpc_prev = 0.0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -120,6 +110,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if reset_state:
       self.v_desired_filter.x = v_ego
       self.a_desired = np.clip(sm['carState'].aEgo, ACCEL_MIN, ACCEL_MAX)
+      self._e2e_bias.reset_state()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -160,9 +151,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     is_e2e = self.is_e2e(sm)
 
     if is_e2e:
-      output_a_target_mpc = self._e2e_bias.apply_mpc(output_a_target_mpc, self.a_mpc_prev, self.dt,
+      output_a_target_mpc = self._e2e_bias.apply_mpc(output_a_target_mpc, self.dt,
                                                      bypass=(self.fcw or output_should_stop_mpc))
-    self.a_mpc_prev = output_a_target_mpc
 
     self.a_cruise = get_cruise_accel(is_e2e, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,

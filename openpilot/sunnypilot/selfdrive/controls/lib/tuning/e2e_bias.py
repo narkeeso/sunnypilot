@@ -71,6 +71,12 @@ class E2EBiasController:
     self._tick = 0
     self._e2e_bias = DEFAULT_BIAS
     self._mpc_ramp = None
+    self._a_mpc_prev = 0.0
+
+  def reset_state(self):
+    """Clear per-drive state. Call on engage/disengage so a re-engage can't
+    slew the MPC ramp from a stale previous-cycle value."""
+    self._a_mpc_prev = 0.0
 
   def apply(self, a_target_e2e: float, lead_drel: float | None = None, v_ego: float | None = None) -> float:
     """Add the speed bias + spacing bleed to the model's desired acceleration.
@@ -86,7 +92,7 @@ class E2EBiasController:
     b = self._e2e_bias
     if b == 0.0:
       return a_target_e2e
-    headway = lead_drel / max(v_ego, 1.0) if (lead_drel is not None and v_ego) else None
+    headway = lead_drel / v_ego if (lead_drel is not None and v_ego) else None
     gate = lead_gate(headway)
     # Speed-hold: fades out as model braking grows (full at >= -|bias|, zero at <= -2*|bias|)
     # and stands down on lead approach. Stops stay identical to stock.
@@ -98,13 +104,17 @@ class E2EBiasController:
       bias_scale -= bleed_factor(headway) * bleed_safety
     return a_target_e2e + b * bias_scale
 
-  def apply_mpc(self, a_target_mpc: float, a_mpc_prev: float, dt: float, bypass: bool = False) -> float:
+  def apply_mpc(self, a_target_mpc: float, dt: float, bypass: bool = False) -> float:
     """Smooth the MPC's braking onset when a strength is set, so a lead ahead triggers
     a gradual ease-off instead of a stiff brake. Emergency (bypass) keeps the raw
-    request — the MPC stays the hard floor. Correlated to the same strength slider."""
+    request — the MPC stays the hard floor. Correlated to the same strength slider.
+    State (previous-cycle value) lives here, not in the planner."""
     if bypass or self._mpc_ramp is None:
+      self._a_mpc_prev = a_target_mpc
       return a_target_mpc
-    return max(a_target_mpc, a_mpc_prev - self._mpc_ramp * dt)
+    out = max(a_target_mpc, self._a_mpc_prev - self._mpc_ramp * dt)
+    self._a_mpc_prev = out
+    return out
 
   def _refresh(self):
     self._check_model_change()

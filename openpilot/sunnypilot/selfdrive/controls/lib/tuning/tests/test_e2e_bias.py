@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController, bleed_factor, lead_gate, strength_to_mpc_ramp
+from openpilot.sunnypilot.selfdrive.controls.lib.tuning.e2e_bias import DEFAULT_BIAS, E2EBiasController, bleed_factor, lead_gate, strength_to_mpc_ramp
 
 
 class MockParams:
