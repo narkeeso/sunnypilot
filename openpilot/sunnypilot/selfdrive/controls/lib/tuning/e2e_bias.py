@@ -1,9 +1,22 @@
 """
-E2E speed bias tuning.
+E2E longitudinal personality (personal tuning).
 
-Self-contained controller: the bias algorithm, its hot-reloadable params, and the
-model-change reset all live here so the planner's merge surface against upstream
-is a single apply() call.
+North star: the E2E model drives by what it *predicts*, not by what the driver
+wants. When the model is too conservative (surrenders speed early) or too
+assertive (holds the go pedal past comfortable), this module trims that
+confidence toward the driver's preference.
+
+One `LongitudinalE2EBias` slider = one personality axis:
+  positive — assertive: hold set speed on the open road, and ease off to keep a
+             bigger gap when following a slower car (never stacking decel onto
+             the model's own braking)
+  zero     — stock model behaviour
+  negative — conservative: prefer the model's own (lower) acceleration
+
+Implementation is self-contained so the planner's merge surface against
+upstream stays a single apply() call: speed bias + lead-gate, spacing bleed,
+MPC braking-onset ramp (all driven by the same slider), hot-reloadable params,
+and a model-change reset.
 """
 
 import json
