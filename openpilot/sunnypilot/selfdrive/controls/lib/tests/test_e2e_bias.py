@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController, strength_to_mpc_ramp
+from openpilot.sunnypilot.selfdrive.controls.lib.e2e_bias import DEFAULT_BIAS, E2EBiasController, lead_gate, strength_to_mpc_ramp
 
 
 class MockParams:
@@ -122,6 +122,29 @@ class TestE2EBiasController(unittest.TestCase):
     c = E2EBiasController(params=MockParams())
     c._mpc_ramp = 0.8
     self.assertAlmostEqual(c.apply_mpc(-0.1, -0.3, dt=0.05), -0.1, places=6)
+
+  def test_lead_gate_far_and_no_lead(self):
+    assert lead_gate(None) == 1.0
+    assert lead_gate(float("inf")) == 1.0
+    self.assertAlmostEqual(lead_gate(3.0), 1.0, places=6)
+
+  def test_lead_gate_close(self):
+    self.assertAlmostEqual(lead_gate(0.5), 0.0, places=6)
+    self.assertAlmostEqual(lead_gate(1.75), 0.5, places=6)
+
+  def test_bias_stands_down_on_approach(self):
+    c = make_controller(bias=0.15)
+    # far lead (headway 3s) -> full bias
+    self.assertAlmostEqual(c.apply(0.5, lead_drel=90.0, v_ego=30.0), 0.65, places=6)
+    # close lead (headway 0.5s) -> no bias
+    self.assertAlmostEqual(c.apply(0.5, lead_drel=15.0, v_ego=30.0), 0.5, places=6)
+    # no lead -> full bias
+    self.assertAlmostEqual(c.apply(0.5), 0.65, places=6)
+
+  def test_bias_fades_with_lead_headway(self):
+    c = make_controller(bias=0.15)
+    # headway 1.75s -> half bias
+    self.assertAlmostEqual(c.apply(0.5, lead_drel=52.5, v_ego=30.0), 0.5 + 0.15 * 0.5, places=6)
 
   def test_model_change_resets_bias_to_default(self):
     bundle = json.dumps({"internalName": "modelA", "generation": 1})

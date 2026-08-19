@@ -19,6 +19,19 @@ BIAS_STEPS = 20
 BIAS_STEP_SIZE = 0.01
 MPC_RAMP_MIN = 0.4   # m/s^3 at full strength: -0.3 m/s^2 over ~0.75s, clearly gentle
 MPC_RAMP_MAX = 2.5   # m/s^3 at strength 1: -0.3 m/s^2 over ~0.12s, near stock
+LEAD_FADE_HEADWAY_MIN = 1.0   # seconds headway: bias fully off below this
+LEAD_FADE_HEADWAY_MAX = 2.5   # seconds headway: bias fully on above this
+
+
+def lead_gate(headway):
+  """1.0 when far / no lead (bias full), 0.0 when a lead is close (bias off).
+
+  The bias is a cruise behavior — hold set speed. On approach it must stand down so
+  the model's natural early deceleration comes through instead of being held back."""
+  if headway is None or np.isinf(headway):
+    return 1.0
+  return float(np.clip((headway - LEAD_FADE_HEADWAY_MIN) /
+                       (LEAD_FADE_HEADWAY_MAX - LEAD_FADE_HEADWAY_MIN), 0.0, 1.0))
 
 
 def strength_to_mpc_ramp(strength):
@@ -43,7 +56,7 @@ class E2EBiasController:
     self._e2e_bias = DEFAULT_BIAS
     self._mpc_ramp = None
 
-  def apply(self, a_target_e2e: float) -> float:
+  def apply(self, a_target_e2e: float, lead_drel: float | None = None, v_ego: float | None = None) -> float:
     """Add the speed bias to the model's desired acceleration."""
     self._tick += 1
     if self._tick % self.REFRESH_PERIOD == 0:
@@ -51,12 +64,13 @@ class E2EBiasController:
     b = self._e2e_bias
     if b == 0.0:
       return a_target_e2e
+    headway = lead_drel / max(v_ego, 1.0) if (lead_drel is not None and v_ego) else None
     # Fade the bias out as model braking grows: full while the model requests at or above
     # -|bias|, zero once it requests -2*|bias| or less, linear in between. The blend width
     # scales with the bias so the slider's strength maps directly onto the hold. Stops stay
     # identical to stock; negative bias (favouring the model) fades out of braking the same
-    # way so it never adds braking either.
-    bias_scale = np.clip((a_target_e2e + 2.0 * abs(b)) / abs(b), 0.0, 1.0)
+    # way so it never adds braking either. Also stand down on lead approach (headway gate).
+    bias_scale = np.clip((a_target_e2e + 2.0 * abs(b)) / abs(b), 0.0, 1.0) * lead_gate(headway)
     return a_target_e2e + b * bias_scale
 
   def apply_mpc(self, a_target_mpc: float, a_mpc_prev: float, dt: float, bypass: bool = False) -> float:
