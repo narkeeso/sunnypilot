@@ -142,17 +142,20 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
-    lead_one = sm['radarState'].leadOne
-    output_a_target_e2e = self._e2e_bias.apply(output_a_target_e2e,
-                                               lead_drel=lead_one.dRel if lead_one.present else None,
-                                               v_ego=v_ego)
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
+    lead_one = sm['radarState'].leadOne
+    lead_drel = lead_one.dRel if lead_one.present else None
+    output_a_target_e2e = self._e2e_bias.apply(output_a_target_e2e, lead_drel=lead_drel, v_ego=v_ego)
 
     is_e2e = self.is_e2e(sm)
 
     if is_e2e:
-      output_a_target_mpc = self._e2e_bias.apply_mpc(output_a_target_mpc, self.dt,
-                                                     bypass=(self.fcw or output_should_stop_mpc))
+      # Smooth brake onset on both paths (model + MPC floor) using the same
+      # slider-tied, speed+lead-aware ramp; safety bubble bypasses inside ~2s of a lead.
+      output_a_target_e2e = self._e2e_bias.apply_model(output_a_target_e2e, v_ego=v_ego, lead_drel=lead_drel,
+                                                       dt=self.dt, bypass=(self.fcw or output_should_stop_e2e))
+      output_a_target_mpc = self._e2e_bias.apply_mpc(output_a_target_mpc, v_ego=v_ego, lead_drel=lead_drel,
+                                                     dt=self.dt, bypass=(self.fcw or output_should_stop_mpc))
 
     self.a_cruise = get_cruise_accel(is_e2e, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,

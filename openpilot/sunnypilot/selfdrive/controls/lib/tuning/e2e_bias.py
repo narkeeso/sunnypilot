@@ -38,6 +38,15 @@ BLEED_HEADWAY_MIN = 1.0       # seconds headway: spacing bleed fades in above th
 BLEED_HEADWAY_MAX = 3.0       # seconds headway: spacing bleed fades out above this
 BLEED_FADE = 0.5              # headway (s) over which the bleed fades at band edges
 BLEED_BRAKE_BLEND = 0.2       # m/s^2 window over which the bleed steps out of braking
+# Brake-onset ramp: how aggressively braking may come on, validated by simulation
+# (rate_sim): the plain max(base, speed_floor) floor alone still collided in
+# closed-loop replan for tight/late hazards, so a hard TTC bubble forces raw
+# authority inside ~2s of a real lead. That bubble is the safety guarantee.
+RAMP_DIST_BUDGET = 20.0   # m: max extra distance a smoothed onset may consume at speed
+RAMP_DECEL_REF = 1.5      # m/s^2: decel magnitude the budget is anchored to
+RAMP_URGENCY_MAX = 8.0    # max multiplier as time-to-contact shrinks
+RAMP_TTC_REF = 4.0        # s: at/beyond this TTC urgency = 1 (open-road smoothing)
+RAMP_TTC_HARD = 2.0       # s: inside this the ramp is bypassed entirely (raw braking)
 
 
 def lead_gate(headway):
@@ -64,7 +73,7 @@ def bleed_factor(headway):
 
 
 def strength_to_mpc_ramp(strength):
-  """Ramp rate (m/s^3, lower = smoother MPC braking onset) for a given strength.
+  """Base ramp rate (m/s^3, lower = smoother braking onset) for a given strength.
   None = no smoothing (stock). Reuses the same slider as the speed bias: both trim
   how much the model's natural feel is trusted over the robot's stiffness."""
   try:
@@ -76,6 +85,29 @@ def strength_to_mpc_ramp(strength):
   return float(np.interp(s, [1, BIAS_STEPS], [MPC_RAMP_MAX, MPC_RAMP_MIN]))
 
 
+def ramp_rate(strength: float, v_ego: float, lead_drel: float | None) -> float | None:
+  """Effective brake-onset slew rate (m/s^3) for this cycle; None = raw (no smoothing).
+
+  Validated by simulation (rate_sim3/4):
+  - base: strength-to-ramp (higher bias = smoother onset)
+  - speed floor: v_ego * DECEL_REF / DIST_BUDGET, so the extra distance a smoothed
+    onset eats stays <= DIST_BUDGET no matter the speed
+  - urgency: scales up as a real lead's TTC shrinks toward RAMP_TTC_HARD
+  - hard bubble: inside RAMP_TTC_HARD of a real lead -> None (full authority)
+  """
+  base = strength_to_mpc_ramp(strength)
+  if base is None:
+    return None
+  urgency = 1.0
+  if lead_drel is not None and v_ego > 0.5:
+    ttc = lead_drel / v_ego
+    if ttc < RAMP_TTC_HARD:
+      return None
+    urgency = float(min(RAMP_URGENCY_MAX, max(1.0, RAMP_TTC_REF / ttc)))
+  speed_floor = v_ego * RAMP_DECEL_REF / RAMP_DIST_BUDGET
+  return max(base, speed_floor) * urgency
+
+
 class E2EBiasController:
   REFRESH_PERIOD = int(PARAMS_UPDATE_PERIOD / DT_MDL)
 
@@ -83,13 +115,15 @@ class E2EBiasController:
     self._params = params or Params()
     self._tick = 0
     self._e2e_bias = DEFAULT_BIAS
-    self._mpc_ramp = None
+    self._strength = 0
     self._a_mpc_prev = 0.0
+    self._a_model_prev = 0.0
 
   def reset_state(self):
     """Clear per-drive state. Call on engage/disengage so a re-engage can't
-    slew the MPC ramp from a stale previous-cycle value."""
+    slew the braking ramps from a stale previous-cycle value."""
     self._a_mpc_prev = 0.0
+    self._a_model_prev = 0.0
 
   def apply(self, a_target_e2e: float, lead_drel: float | None = None, v_ego: float | None = None) -> float:
     """Add the speed bias + spacing bleed to the model's desired acceleration.
@@ -117,15 +151,38 @@ class E2EBiasController:
       bias_scale -= bleed_factor(headway) * bleed_safety
     return a_target_e2e + b * bias_scale
 
-  def apply_mpc(self, a_target_mpc: float, dt: float, bypass: bool = False) -> float:
+  def apply_model(self, a_target_e2e: float, v_ego: float, lead_drel: float | None = None,
+                  dt: float = DT_MDL, bypass: bool = False) -> float:
+    """Smooth the E2E model's braking onset (the phantom-brake path) with the same
+    slider-tied, speed+lead-aware ramp as the MPC floor. Phantom braking (no real
+    lead) becomes a gradual squeeze instead of an instant slam; inside ~2s of a
+    real lead the ramp is bypassed so emergency braking stays raw."""
+    if bypass:
+      self._a_model_prev = a_target_e2e
+      return a_target_e2e
+    rate = ramp_rate(self._strength, v_ego, lead_drel)
+    if rate is None:
+      self._a_model_prev = a_target_e2e
+      return a_target_e2e
+    out = max(a_target_e2e, self._a_model_prev - rate * dt)
+    self._a_model_prev = out
+    return out
+
+  def apply_mpc(self, a_target_mpc: float, v_ego: float, lead_drel: float | None = None,
+                dt: float = DT_MDL, bypass: bool = False) -> float:
     """Smooth the MPC's braking onset when a strength is set, so a lead ahead triggers
     a gradual ease-off instead of a stiff brake. Emergency (bypass) keeps the raw
-    request — the MPC stays the hard floor. Correlated to the same strength slider.
+    request — the MPC stays the hard floor. Correlated to the same strength slider
+    and hardened by the same speed floor + TTC safety bubble as apply_model.
     State (previous-cycle value) lives here, not in the planner."""
-    if bypass or self._mpc_ramp is None:
+    if bypass:
       self._a_mpc_prev = a_target_mpc
       return a_target_mpc
-    out = max(a_target_mpc, self._a_mpc_prev - self._mpc_ramp * dt)
+    rate = ramp_rate(self._strength, v_ego, lead_drel)
+    if rate is None:
+      self._a_mpc_prev = a_target_mpc
+      return a_target_mpc
+    out = max(a_target_mpc, self._a_mpc_prev - rate * dt)
     self._a_mpc_prev = out
     return out
 
@@ -133,7 +190,10 @@ class E2EBiasController:
     self._check_model_change()
     strength = self._params.get("LongitudinalE2EBias")
     self._e2e_bias = self._strength_to_bias(strength)
-    self._mpc_ramp = strength_to_mpc_ramp(strength)
+    try:
+      self._strength = max(-BIAS_STEPS, min(BIAS_STEPS, int(float(strength))))
+    except (TypeError, ValueError):
+      self._strength = 0
 
   def _strength_to_bias(self, strength):
     try:

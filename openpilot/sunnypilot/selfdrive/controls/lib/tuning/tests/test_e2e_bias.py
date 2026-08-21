@@ -1,7 +1,9 @@
 import json
 import unittest
 
-from openpilot.sunnypilot.selfdrive.controls.lib.tuning.e2e_bias import DEFAULT_BIAS, E2EBiasController, bleed_factor, lead_gate, strength_to_mpc_ramp
+from openpilot.sunnypilot.selfdrive.controls.lib.tuning.e2e_bias import (
+  DEFAULT_BIAS, E2EBiasController, bleed_factor, lead_gate, ramp_rate, strength_to_mpc_ramp,
+)
 
 
 class MockParams:
@@ -104,28 +106,94 @@ class TestE2EBiasController(unittest.TestCase):
 
   def test_apply_mpc_smooths_braking(self):
     c = E2EBiasController(params=MockParams())
-    c._mpc_ramp = 0.4
+    c._strength = 20  # base rate 0.4 m/s^3 (stock-ish softening); no lead -> no bubble
     c._a_mpc_prev = -0.05
-    # mpc wants -0.3, previous output was -0.05: ramped to -0.05 - 0.4*dt
-    self.assertAlmostEqual(c.apply_mpc(-0.3, dt=0.05), -0.05 - 0.4 * 0.05, places=6)
+    # mpc wants -0.3, previous output was -0.05: ramped to -0.05 - rate*dt (v low so speed floor < base)
+    self.assertAlmostEqual(c.apply_mpc(-0.3, v_ego=5.0, dt=0.05), -0.05 - 0.4 * 0.05, places=6)
 
   def test_apply_mpc_emergency_bypasses(self):
     c = E2EBiasController(params=MockParams())
-    c._mpc_ramp = 0.8
+    c._strength = 20
     c._a_mpc_prev = -0.05
-    self.assertAlmostEqual(c.apply_mpc(-1.0, dt=0.05, bypass=True), -1.0, places=6)
+    self.assertAlmostEqual(c.apply_mpc(-1.0, v_ego=10.0, dt=0.05, bypass=True), -1.0, places=6)
 
   def test_apply_mpc_no_ramp_is_stock(self):
     c = E2EBiasController(params=MockParams())
-    c._mpc_ramp = None
+    c._strength = 0
     c._a_mpc_prev = -0.05
-    self.assertAlmostEqual(c.apply_mpc(-0.3, dt=0.05), -0.3, places=6)
+    self.assertAlmostEqual(c.apply_mpc(-0.3, v_ego=10.0, dt=0.05), -0.3, places=6)
 
   def test_apply_mpc_release_not_limited(self):
     c = E2EBiasController(params=MockParams())
-    c._mpc_ramp = 0.8
+    c._strength = 8
     c._a_mpc_prev = -0.3
-    self.assertAlmostEqual(c.apply_mpc(-0.1, dt=0.05), -0.1, places=6)
+    self.assertAlmostEqual(c.apply_mpc(-0.1, v_ego=10.0, dt=0.05), -0.1, places=6)
+
+  def test_apply_mpc_safety_bubble_inside_2s_is_raw(self):
+    c = E2EBiasController(params=MockParams())
+    c._strength = 20
+    c._a_mpc_prev = 0.0
+    # lead at 1.5s time-to-contact: ramp bypassed, raw authority immediately
+    v = 15.0
+    for _ in range(3):
+      out = c.apply_mpc(-1.7, v_ego=v, lead_drel=1.5 * v, dt=0.05)
+    self.assertAlmostEqual(out, -1.7, places=6)
+
+  def test_ramp_rate_stock_and_bubble(self):
+    assert ramp_rate(0, 20.0, None) is None
+    # inside 2s TTC of a real lead -> None
+    assert ramp_rate(20, 15.0, 20.0) is None   # ttc = 1.33s
+
+  def test_ramp_rate_speed_floor_raises_rate(self):
+    # no lead: rate = max(base, v*1.5/20). higher speed -> higher floor
+    lo = ramp_rate(7, 10.0, None)
+    hi = ramp_rate(7, 30.0, None)
+    assert lo is not None and hi is not None
+    self.assertAlmostEqual(lo, max(strength_to_mpc_ramp(7), 10 * 1.5 / 20.0), places=6)
+    assert hi > lo
+
+  def test_ramp_rate_far_lead_no_urgency(self):
+    # lead far enough that TTC >= RAMP_TTC_REF -> urgency = 1 -> equals no-lead
+    no_lead = ramp_rate(7, 10.0, None)
+    far = ramp_rate(7, 10.0, 60.0)   # ttc = 6s
+    self.assertAlmostEqual(no_lead, far, places=6)
+
+  def test_apply_model_smooths_phantom(self):
+    c = E2EBiasController(params=MockParams())
+    c._strength = 20
+    c._a_model_prev = 0.0
+    # phantom: model slams -1.7 with no lead. First cycle is slew-limited, not -1.7
+    out = c.apply_model(-1.7, v_ego=5.0, dt=0.05)
+    assert out > -1.7 + 1e-9
+    self.assertAlmostEqual(out, -0.4 * 0.05, places=6)  # expects negative ~ -0.02
+
+  def test_apply_model_reaches_full_decel_over_time(self):
+    c = E2EBiasController(params=MockParams())
+    c._strength = 20
+    c._a_model_prev = 0.0
+    v = 5.0
+    out = 0.0
+    for _ in range(200):  # 10s of 0.05s cycles at rate 0.4 -> reaches the -1.7 demand
+      out = c.apply_model(-1.7, v_ego=v, dt=0.05)
+    self.assertAlmostEqual(out, -1.7, places=6)
+
+  def test_apply_model_safety_bubble_raw(self):
+    c = E2EBiasController(params=MockParams())
+    c._strength = 20
+    c._a_model_prev = 0.0
+    v = 15.0
+    for _ in range(3):
+      out = c.apply_model(-1.7, v_ego=v, lead_drel=1.5 * v, dt=0.05)
+    self.assertAlmostEqual(out, -1.7, places=6)
+
+  def test_reset_state_clears_ramp_prev(self):
+    c = E2EBiasController(params=MockParams())
+    c._strength = 20
+    c.apply_model(-1.7, v_ego=10.0, dt=0.05)
+    assert c._a_model_prev < -0.001
+    c.reset_state()
+    self.assertEqual(c._a_model_prev, 0.0)
+    self.assertEqual(c._a_mpc_prev, 0.0)
 
   def test_lead_gate_far_and_no_lead(self):
     assert lead_gate(None) == 1.0
