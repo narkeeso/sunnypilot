@@ -145,6 +145,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
     lead_one = sm['radarState'].leadOne
     lead_drel = lead_one.dRel if lead_one.present else None
+    lead_vrel = lead_one.vRel if lead_one.present else None
+    output_a_target_e2e = self._e2e_bias.apply_preempt(output_a_target_e2e, v_ego=v_ego,
+                                                       v_rel=lead_vrel, lead_drel=lead_drel)
     output_a_target_e2e = self._e2e_bias.apply(output_a_target_e2e, lead_drel=lead_drel, v_ego=v_ego)
 
     is_e2e = self.is_e2e(sm)
@@ -169,6 +172,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+    if is_e2e:
+      # Highway coast preference: remap routine brakes toward regen-only (post-min,
+      # so it shapes whichever candidate won). Fenced off from fast-close/deep.
+      output_a_target = self._e2e_bias.apply_coast(output_a_target, v_ego=v_ego,
+                                                   v_rel=lead_vrel, lead_drel=lead_drel)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.a_desired = float(self.output_a_target)

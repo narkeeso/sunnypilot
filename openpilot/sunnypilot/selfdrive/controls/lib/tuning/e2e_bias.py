@@ -47,6 +47,20 @@ RAMP_DECEL_REF = 1.5      # m/s^2: decel magnitude the budget is anchored to
 RAMP_URGENCY_MAX = 8.0    # max multiplier as time-to-contact shrinks
 RAMP_TTC_REF = 4.0        # s: at/beyond this TTC urgency = 1 (open-road smoothing)
 RAMP_TTC_HARD = 2.0       # s: inside this the ramp is bypassed entirely (raw braking)
+# Highway "coast preference" (pre-empt + coast remap), validated against device
+# logs (hwy_safety.py): 87% of hwy braking is fast-close and left untouched by
+# construction; the mild 13% is remapped toward regen-only and that still
+# creates distance (gap 65->74m real, 65->74m shaped on the worst segment).
+HWY_COAST_V = 18.0        # m/s: highway threshold
+HWY_COAST_FROM = -0.12    # m/s^2: shallower than this = routine (shape it)
+HWY_COAST_DEEP = -0.55    # m/s^2: at/beyond this = real braking, full authority
+HWY_COAST_FLOOR = -0.05   # m/s^2: mild coast target at the shallow end (no brake light)
+HWY_TTC_SAFE = 2.5        # s: only shape when TTC is comfortably above this
+HWY_VREL_SAFE = -3.0      # m/s: only shape when closing more slowly than this
+PREEMPT_V = 18.0          # m/s: pre-empt only at highway speed
+PREEMPT_GAP = 15.0        # m: pre-empt only when the gap is still generous
+PREEMPT_K = 0.12          # decel gain on closing speed (smooth track of the lead)
+PREEMPT_CAP = -0.15       # m/s^2: pre-empt never brakes harder than this (coast-like)
 
 
 def lead_gate(headway):
@@ -167,6 +181,40 @@ class E2EBiasController:
     out = max(a_target_e2e, self._a_model_prev - rate * dt)
     self._a_model_prev = out
     return out
+
+  def apply_preempt(self, a_target_e2e: float, v_ego: float, v_rel: float | None,
+                    lead_drel: float | None) -> float:
+    """Create the gap BEFORE the MPC wants to: a gentle coast-like decel that starts
+    as soon as the gap starts compressing at speed, so the MPC lead follower never
+    escalates into a hard brake. Only ever a candidate (min): if the model/MPC
+    demands deeper braking, that wins. Fenced off when the lead is actually close."""
+    if self._strength <= 0:
+      return a_target_e2e
+    if v_ego < PREEMPT_V or lead_drel is None or v_rel is None or v_rel >= 0.0:
+      return a_target_e2e
+    if lead_drel < PREEMPT_GAP:
+      return a_target_e2e
+    if lead_drel / max(v_ego, 0.5) <= HWY_TTC_SAFE:
+      return a_target_e2e
+    a_pre = max(PREEMPT_CAP, PREEMPT_K * v_rel)  # v_rel<0 -> gentle coast-like decel
+    return min(a_target_e2e, a_pre)
+
+  def apply_coast(self, a_target: float, v_ego: float, v_rel: float | None,
+                  lead_drel: float | None) -> float:
+    """Highway coast preference: remap routine small/mid brakes toward regen-only
+    magnitudes (so the brake light stays off) instead of stomping to open a gap.
+    Fenced: never touches fast-close approaches (vrel low / TTC low), never touches
+    deep braking (>= HWY_COAST_DEEP), never when a lead is absent or slow speed."""
+    if self._strength <= 0:
+      return a_target
+    if v_ego < HWY_COAST_V or lead_drel is None or v_rel is None:
+      return a_target
+    if a_target >= HWY_COAST_FROM or a_target <= HWY_COAST_DEEP:
+      return a_target
+    if lead_drel / max(v_ego, 0.5) <= HWY_TTC_SAFE or v_rel <= HWY_VREL_SAFE:
+      return a_target
+    t = (a_target - HWY_COAST_FROM) / (HWY_COAST_DEEP - HWY_COAST_FROM)
+    return HWY_COAST_FLOOR + t * (HWY_COAST_DEEP - HWY_COAST_FLOOR)
 
   def apply_mpc(self, a_target_mpc: float, v_ego: float, lead_drel: float | None = None,
                 dt: float = DT_MDL, bypass: bool = False) -> float:

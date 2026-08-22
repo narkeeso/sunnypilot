@@ -195,6 +195,58 @@ class TestE2EBiasController(unittest.TestCase):
     self.assertEqual(c._a_model_prev, 0.0)
     self.assertEqual(c._a_mpc_prev, 0.0)
 
+  def _hwy(self, strength=7):
+    c = E2EBiasController(params=MockParams())
+    c._strength = strength
+    return c
+
+  def test_apply_preempt_active_when_gap_compresses(self):
+    c = self._hwy()
+    # far lead (ttc ~3.3s), closing at -2 m/s, model neutral -> gentle decel added
+    out = c.apply_preempt(0.0, v_ego=30.0, v_rel=-2.0, lead_drel=100.0)
+    self.assertAlmostEqual(out, max(-0.15, 0.12 * -2.0), places=6)  # -0.15 cap ... -0.24 capped -0.15
+    self.assertLess(out, 0.0)
+
+  def test_apply_preempt_no_action_on_conditions(self):
+    c = self._hwy()
+    # not closing
+    self.assertEqual(c.apply_preempt(0.0, v_ego=30.0, v_rel=1.0, lead_drel=100.0), 0.0)
+    # no lead
+    self.assertEqual(c.apply_preempt(0.0, v_ego=30.0, v_rel=-2.0, lead_drel=None), 0.0)
+    # too close (ttc < 2.5s): real braking takes over, no pre-empt
+    self.assertEqual(c.apply_preempt(0.0, v_ego=30.0, v_rel=-5.0, lead_drel=60.0), 0.0)
+    # strength 0 = stock
+    c0 = self._hwy(strength=0)
+    self.assertEqual(c0.apply_preempt(0.0, v_ego=30.0, v_rel=-2.0, lead_drel=100.0), 0.0)
+
+  def test_apply_preempt_never_overrides_real_braking(self):
+    c = self._hwy()
+    # model already brakes hard -> min keeps the deep brake
+    out = c.apply_preempt(-0.8, v_ego=30.0, v_rel=-2.0, lead_drel=100.0)
+    self.assertAlmostEqual(out, -0.8, places=6)
+
+  def test_apply_coast_softens_mild_highway_brake(self):
+    c = self._hwy()
+    soft = c.apply_coast(-0.3, v_ego=30.0, v_rel=-1.0, lead_drel=90.0)
+    self.assertLess(soft, -0.12)
+    self.assertGreater(soft, -0.3)   # softened toward coast
+
+  def test_apply_coast_fenced_off(self):
+    c = self._hwy()
+    # fast-close: untouched
+    self.assertAlmostEqual(c.apply_coast(-0.3, v_ego=30.0, v_rel=-5.0, lead_drel=90.0), -0.3, places=6)
+    # deep brake: untouched (full authority)
+    self.assertAlmostEqual(c.apply_coast(-0.6, v_ego=30.0, v_rel=-1.0, lead_drel=90.0), -0.6, places=6)
+    # no lead / low speed / strength 0: untouched
+    self.assertAlmostEqual(c.apply_coast(-0.3, v_ego=30.0, v_rel=-1.0, lead_drel=None), -0.3, places=6)
+    self.assertAlmostEqual(c.apply_coast(-0.3, v_ego=10.0, v_rel=-1.0, lead_drel=90.0), -0.3, places=6)
+    c0 = self._hwy(strength=0)
+    self.assertAlmostEqual(c0.apply_coast(-0.3, v_ego=30.0, v_rel=-1.0, lead_drel=90.0), -0.3, places=6)
+    # hard floor preserved: never raises above 0 / shallow coast floor respected
+    c22 = self._hwy()
+    shallow = c22.apply_coast(-0.13, v_ego=30.0, v_rel=-0.5, lead_drel=120.0)
+    self.assertGreaterEqual(shallow, -0.12)
+
   def test_lead_gate_far_and_no_lead(self):
     assert lead_gate(None) == 1.0
     assert lead_gate(float("inf")) == 1.0
