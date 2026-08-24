@@ -4,6 +4,31 @@ E2E speed bias tuning.
 Self-contained controller: the bias algorithm, its hot-reloadable params, and the
 model-change reset all live here so the planner's merge surface against upstream
 is a single apply() call.
+
+Mechanisms (all driven by one LongitudinalE2EBias slider, strength -20..20):
+
+1. Speed bias + fade (apply): the personality axis. Adds b = strength * 0.01
+   m/s^2 to the model's e2e accel request on open road (positive = hold speed).
+   Stands down linearly as the model's OWN braking request grows: full bias at
+   a >= 0, zero at a <= -|bias|. So the model's gentle early ease-off on
+   approach is never argued with — the bias stops fighting the moment the model
+   starts slowing. Pure e2e signal, no state, no gating. Negative bias (favor
+   the model) fades out of braking the same way, never adding braking.
+
+2. MPC braking-onset ramp (apply_mpc): smooths the lead-following path, which
+   the e2e bias does not touch. Ramp rate 0.4-2.5 m/s^3 scaled by the same
+   slider; caps how fast the MPC's brake request can change per frame so a lead
+   ahead triggers a gradual ease-off instead of a stiff brake. Emergency
+   (bypass = fcw/should_stop) keeps the raw request — the MPC stays the hard
+   floor. Planner tracks a_mpc_prev.
+
+3. Strength -> values mapping (_strength_to_bias, strength_to_mpc_ramp): one
+   slider, two interpretations — bias magnitude and MPC ramp rate.
+
+4. Model-change reset (_check_model_change): safety. When
+   ModelManager_ActiveBundle identity changes (user swapped models), bias
+   resets to 0 and LongitudinalE2EBiasTunedFor is stamped, so a bias tuned
+   against one model's behavior never applies silently to another's.
 """
 
 import json
