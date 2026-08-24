@@ -1,3 +1,18 @@
+# narkeeso/sunnypilot
+
+Personal fork of sunnypilot, tuned for comfortable **full E2E (end-to-end) driving** —
+the model drives, and we intervene as little as possible. Where the model is already
+conservative, it stays in charge. Personal longitudinal tuning is deliberately minimal:
+a single E2E speed-bias slider (`LongitudinalE2EBias`) trims the model's natural
+conservatism on open road, and the bias stands down the moment the model starts
+braking, so approach and stop feel are the model's own. No second planner, no gating,
+no oscillation — the model remains the source of truth. Well-driven on the Toyota
+RAV4 Hybrid.
+
+---
+
+<!-- everything below is upstream sunnypilot's README, kept verbatim to avoid thrashing upstream -->
+
 ![](https://user-images.githubusercontent.com/47793918/233812617-beab2e71-57b9-479e-8bff-c3931347ca40.png)
 
 ## 🌞 What is sunnypilot?
