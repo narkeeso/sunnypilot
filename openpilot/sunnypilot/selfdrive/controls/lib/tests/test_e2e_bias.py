@@ -29,33 +29,33 @@ class TestE2EBiasController(unittest.TestCase):
     c = make_controller(bias=0.15)
     self.assertAlmostEqual(c.apply(0.5), 0.65, places=6)
 
-  def test_no_bias_at_2x_braking(self):
+  def test_no_bias_at_full_braking(self):
     c = make_controller(bias=0.15)
     self.assertAlmostEqual(c.apply(-0.3), -0.3, places=6)
 
   def test_linear_fade_midpoint(self):
     c = make_controller(bias=0.15)
-    # at -1.5 * bias the blend is halfway through, so half of the bias is added
-    self.assertAlmostEqual(c.apply(-0.225), -0.225 + 0.15 * 0.5, places=6)
+    # at -0.5 * bias the blend is halfway through, so half of the bias is added
+    self.assertAlmostEqual(c.apply(-0.075), -0.075 + 0.15 * 0.5, places=6)
 
-  def test_full_bias_at_minus_bias(self):
+  def test_full_bias_at_zero_braking(self):
     c = make_controller(bias=0.15)
-    self.assertAlmostEqual(c.apply(-0.15), 0.0, places=6)
+    self.assertAlmostEqual(c.apply(0.0), 0.15, places=6)
 
-  def test_zero_bias_at_minus_2bias(self):
+  def test_zero_bias_at_minus_bias(self):
     c = make_controller(bias=0.13)
-    self.assertAlmostEqual(c.apply(-0.26), -0.26, places=6)
+    self.assertAlmostEqual(c.apply(-0.13), -0.13, places=6)
 
   def test_fade_width_scales_with_bias(self):
-    # stronger bias must reach full hold deeper into the bleed region
+    # stronger bias keeps more hold deeper into the braking region
     strong = make_controller(bias=0.2)
     weak = make_controller(bias=0.05)
-    # at -0.1 bleed: strong is still inside its full window, weak is already fully faded
-    self.assertAlmostEqual(strong.apply(-0.1), -0.1 + 0.2, places=6)
+    # at -0.1 braking: strong is halfway faded, weak is fully faded
+    self.assertAlmostEqual(strong.apply(-0.1), -0.1 + 0.1, places=6)
     self.assertAlmostEqual(weak.apply(-0.1), -0.1, places=6)
-    # at the same half-fade point relative to each: -1.5*bias
-    self.assertAlmostEqual(strong.apply(-0.3), -0.3 + 0.1, places=6)
-    self.assertAlmostEqual(weak.apply(-0.075), -0.075 + 0.025, places=6)
+    # at the same half-fade point relative to each: -0.5*bias
+    self.assertAlmostEqual(strong.apply(-0.1), -0.1 + 0.1, places=6)
+    self.assertAlmostEqual(weak.apply(-0.025), -0.025 + 0.025, places=6)
 
   def test_zero_bias_is_noop(self):
     c = make_controller(bias=0.0)
