@@ -76,12 +76,14 @@ class E2EBiasController:
     b = self._e2e_bias
     if b == 0.0:
       return a_target_e2e
-    # Fade the bias out as model braking grows: full while the model requests at or above
-    # -|bias|, zero once it requests -2*|bias| or less, linear in between. The blend width
-    # scales with the bias so the slider's strength maps directly onto the hold. Stops stay
-    # identical to stock; negative bias (favouring the model) fades out of braking the same
-    # way so it never adds braking either.
-    bias_scale = np.clip((a_target_e2e + 2.0 * abs(b)) / abs(b), 0.0, 1.0)
+    # Fade the bias out as soon as the model starts braking: full while the model
+    # requests accel >= 0, zero once it requests -|bias| or less, linear in between.
+    # The model's gentle early ease-off (a in [-|bias|, 0)) is left fully in charge —
+    # the bias stops arguing with it the moment the approach begins. The blend width
+    # scales with the bias so the slider's strength maps directly onto the hold.
+    # Stops stay identical to stock; negative bias (favouring the model) fades out of
+    # braking the same way so it never adds braking either.
+    bias_scale = np.clip((a_target_e2e + abs(b)) / abs(b), 0.0, 1.0)
     return a_target_e2e + b * bias_scale
 
   def apply_mpc(self, a_target_mpc: float, a_mpc_prev: float, dt: float, bypass: bool = False) -> float:
