@@ -221,7 +221,7 @@ class TestE2EBiasController(unittest.TestCase):
     }))
     c._tick = c.REFRESH_PERIOD - 1
     c.apply(0.5)
-    self.assertEqual(c._approach_grace, 30)
+    self.assertEqual(c._approach_grace, 40)
 
   def test_model_change_resets_grace(self):
     bundle = json.dumps({"internalName": "modelA", "generation": 1})

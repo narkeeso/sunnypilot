@@ -652,9 +652,9 @@
               "key": "LongitudinalApproachGrace",
               "widget": "option",
               "title": "Approach Grace",
-              "description": "How quickly the car eases off speed when traffic ahead is getting closer. 0 = off (car behaves exactly as before). 10 = half stand-down, 20 = the speed hold yields fully to the model whenever a lead is closing, so its early ease-off reads through cleanly. 21-30 = gentle extra bleed beyond the model (still only while closing). Does not touch braking.",
+              "description": "How quickly the car eases off speed when traffic ahead is getting closer. 0 = off (car behaves exactly as before). 10 = half stand-down, 20 = the speed hold yields fully to the model whenever a lead is closing, so its early ease-off reads through cleanly. 21-40 = extra bleed beyond the model (still only while closing). Does not touch braking.",
               "min": 0,
-              "max": 30,
+              "max": 40,
               "step": 1,
               "enablement": [
                 {
@@ -987,7 +987,7 @@
                   "widget": "option",
                   "title": "Speed Limit Offset Value",
                   "min": -30,
-                  "max": 30,
+                  "max": 40,
                   "step": 1,
                   "unit": {
                     "metric": "km/h",
