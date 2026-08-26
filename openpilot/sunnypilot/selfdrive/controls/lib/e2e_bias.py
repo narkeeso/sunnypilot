@@ -44,6 +44,8 @@ BIAS_STEPS = 20
 BIAS_STEP_SIZE = 0.01
 MPC_RAMP_MIN = 0.4   # m/s^3 at full strength: -0.3 m/s^2 over ~0.75s, clearly gentle
 MPC_RAMP_MAX = 2.5   # m/s^3 at strength 1: -0.3 m/s^2 over ~0.12s, near stock
+APPROACH_GRACE_STEPS = 20
+APPROACH_GRACE_VREL = -1.0  # m/s: lead closing faster than this trips the stand-down
 
 
 def strength_to_mpc_ramp(strength):
@@ -67,15 +69,25 @@ class E2EBiasController:
     self._tick = 0
     self._e2e_bias = DEFAULT_BIAS
     self._mpc_ramp = None
+    self._approach_grace = 0
 
-  def apply(self, a_target_e2e: float) -> float:
-    """Add the speed bias to the model's desired acceleration."""
+  def apply(self, a_target_e2e: float, lead_closing: bool = False) -> float:
+    """Add the speed bias to the model's desired acceleration.
+
+    lead_closing: fused lead present and closing (radarState.leadOne.present
+    AND vRel < -1). When true, the bias's speed hold is scaled down by the
+    Approach Grace setting so the model's early ease-off on a closing lead
+    reads through cleanly (the driver-like "bleed on closure" feel)."""
     self._tick += 1
     if self._tick % self.REFRESH_PERIOD == 0:
       self._refresh()
     b = self._e2e_bias
     if b == 0.0:
       return a_target_e2e
+    if lead_closing and self._approach_grace > 0:
+      b *= (1.0 - self._approach_grace / APPROACH_GRACE_STEPS)
+      if b == 0.0:
+        return a_target_e2e
     # Fade the bias out as soon as the model starts braking: full while the model
     # requests accel >= 0, zero once it requests -|bias| or less, linear in between.
     # The model's gentle early ease-off (a in [-|bias|, 0)) is left fully in charge —
@@ -99,6 +111,11 @@ class E2EBiasController:
     strength = self._params.get("LongitudinalE2EBias")
     self._e2e_bias = self._strength_to_bias(strength)
     self._mpc_ramp = strength_to_mpc_ramp(strength)
+    grace = self._params.get("LongitudinalApproachGrace")
+    try:
+      self._approach_grace = max(0, min(APPROACH_GRACE_STEPS, int(float(grace))))
+    except (TypeError, ValueError):
+      self._approach_grace = 0
 
   def _strength_to_bias(self, strength):
     try:
@@ -119,5 +136,7 @@ class E2EBiasController:
       return
     if self._params.get("LongitudinalE2EBiasTunedFor") != identity:
       self._params.put("LongitudinalE2EBias", 0)
+      self._params.put("LongitudinalApproachGrace", 0)
       self._params.put("LongitudinalE2EBiasTunedFor", identity)
       self._e2e_bias = DEFAULT_BIAS
+      self._approach_grace = 0

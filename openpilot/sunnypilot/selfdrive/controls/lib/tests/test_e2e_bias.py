@@ -164,6 +164,50 @@ class TestE2EBiasController(unittest.TestCase):
     c.apply(0.5)
     assert c._params.values["LongitudinalE2EBias"] == "20"
 
+  def test_grace_zero_is_noop(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 0
+    self.assertAlmostEqual(c.apply(0.5, lead_closing=True), 0.61, places=6)
+
+  def test_grace_scales_bias(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 10
+    # half stand-down: 0.11 * 0.5 = 0.055
+    self.assertAlmostEqual(c.apply(0.5, lead_closing=True), 0.555, places=6)
+
+  def test_grace_max_fully_stands_down(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 20
+    self.assertAlmostEqual(c.apply(0.5, lead_closing=True), 0.5, places=6)
+
+  def test_grace_only_fires_on_closing(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 20
+    self.assertAlmostEqual(c.apply(0.5, lead_closing=False), 0.61, places=6)
+
+  def test_grace_refresh_reads_param(self):
+    c = E2EBiasController(params=MockParams({
+      "LongitudinalE2EBias": "11",
+      "LongitudinalApproachGrace": "7",
+      "LongitudinalE2EBiasTunedFor": "none",
+    }))
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    self.assertAlmostEqual(c._approach_grace, 7, places=6)
+
+  def test_model_change_resets_grace(self):
+    bundle = json.dumps({"internalName": "modelA", "generation": 1})
+    c = make_controller(bias=0.0, params_values={
+      "ModelManager_ActiveBundle": bundle,
+      "LongitudinalE2EBias": "11",
+      "LongitudinalE2EBiasTunedFor": "none",
+      "LongitudinalApproachGrace": "10",
+    })
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    assert c._params.values["LongitudinalApproachGrace"] == 0
+    assert c._approach_grace == 0
+
 
 if __name__ == "__main__":
   unittest.main()

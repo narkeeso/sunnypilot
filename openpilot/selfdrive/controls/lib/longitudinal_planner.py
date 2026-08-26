@@ -141,7 +141,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
-    output_a_target_e2e = self._e2e_bias.apply(output_a_target_e2e)
+    lead_closing = sm['radarState'].leadOne.present and sm['radarState'].leadOne.vRel < self._e2e_bias.APPROACH_GRACE_VREL
+    output_a_target_e2e = self._e2e_bias.apply(output_a_target_e2e, lead_closing=lead_closing)
 
     is_e2e = self.is_e2e(sm)
 

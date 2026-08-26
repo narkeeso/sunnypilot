@@ -36,6 +36,17 @@ sections:
     min: -20
     max: 20
     step: 1
+  - key: LongitudinalApproachGrace
+    widget: option
+    title: Approach Grace
+    description: "How quickly the car eases off speed when traffic ahead is getting closer. 0 = off (car behaves exactly
+      as before). 10 = half stand-down, 20 = strongest: the speed hold yields fully to the model whenever a lead is
+      closing, so its early ease-off reads through cleanly. Does not touch braking."
+    enablement:
+    - $ref: '#/macros/e2e_longitudinal'
+    min: 0
+    max: 20
+    step: 1
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal
