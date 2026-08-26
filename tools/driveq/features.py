@@ -114,6 +114,54 @@ def stop_profile(rows, v_thresh=0.4, lookback=1.0):
   return prof
 
 
+def lead_health(rows):
+  """Lead-detection metrics for a segment. Rows: (t, vEgo, aTarget, src, dRel, vRel).
+
+  Answers: does the model/radar pipeline actually SEE the lead?
+  - present%        : share of rows with dRel cleared (present lead)
+  - slow%           : share of rows vEgo < 3 m/s (stopped/crawling behind traffic)
+  - present@slow%   : lead present AMONG slow rows — the stopped-lead vision test
+  - flips           : present->absent->present transitions (flicker)
+  - late_detect%    : of hard-close first-seen events (vRel < -4, v>5), share where
+                      the lead first appeared at dRel < 60m (early is 60m+)
+  - first_d_med     : median first-seen dRel of hard-close events
+  Returns dict of metrics (or None if segment has too few rows).
+  """
+  if len(rows) < 60:
+    return None
+  n = len(rows)
+  slow = np.array([r[1] < 3.0 for r in rows])
+  pres = np.array([r[4] == r[4] for r in rows])  # dRel not NaN
+  present_pct = 100.0 * np.mean(pres)
+  slow_pct = 100.0 * np.mean(slow)
+  present_at_slow = 100.0 * np.mean(pres[slow]) if slow.any() else float("nan")
+  flips = int(np.sum(np.array([bool(r[4] == r[4]) for r in rows[1:]]) !=
+                     np.array([bool(r[4] == r[4]) for r in rows[:-1]])))
+  # hard-close first-seen events
+  events = []
+  seen = False
+  for r in rows:
+    pres_now = r[4] == r[4]
+    vrel = r[5] if r[5] == r[5] else 0.0
+    if pres_now and r[1] > 5.0 and vrel < -4.0:
+      if not seen:
+        events.append(r[4])
+      seen = True
+    elif not pres_now:
+      seen = False
+  late = sum(1 for d in events if d < 60)
+  late_pct = 100.0 * late / len(events) if events else float("nan")
+  first_med = float(np.median(events)) if events else float("nan")
+  return {
+    "present_pct": round(present_pct, 1),
+    "slow_pct": round(slow_pct, 1),
+    "present_at_slow": round(present_at_slow, 1),
+    "flips": flips,
+    "late_detect_pct": round(late_pct, 1),
+    "first_d_med": round(first_med, 1),
+  }
+
+
 def seg_stats(rows):
   """Compact per-segment metrics: rows, episodes, min depth, flips, brake %, src, lead%."""
   from collections import Counter

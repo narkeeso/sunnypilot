@@ -44,6 +44,12 @@ Usage:
     Per-segment: stop count (vEgo crossing <0.4) and deepest aTarget in the
     1s before each stop (the "bite" metric).
 
+  driveq leadhealth [--recent N | --since ISO --until ISO]
+    Lead-detection health per segment: present%, slow%, present@slow% (lead
+    among stopped/slow frames — the model's stopped-lead vision), flips
+    (flicker), late_detect% + first-dRel med on hard closes. The RDFM-vs-PMV2
+    signature: RDFM fails stopped-lead detection (present@slow% low, late% high).
+
 TIME ZONES: device logs are UTC. Naive --since/--until strings are read as
 UTC. Pass --tz HH (e.g. -7 for Pacific summer / PDT) to interpret naive input
 times as that offset (and display the list table in it). Explicit ISO offsets
@@ -65,6 +71,7 @@ from driveq.features import (
   SRC,
   brake_flips,
   follow_rows,
+  lead_health,
   seg_stats,
   stop_profile,
   ttc,
@@ -296,6 +303,30 @@ def cmd_stops(args):
             f"{('nan' if np.isnan(amin) else f'{amin:.3f}'):>13}")
 
 
+def cmd_leadhealth(args):
+  """Lead-detection health per segment (does the pipeline SEE the lead?).
+
+  Columns: present% (share with a lead), slow% (share v<3 m/s),
+  present@slow% (lead among slow rows — the stopped-lead vision test, see
+  RDFM vs PMV2), flips (track flicker), late_detect% + first-dRel med of
+  hard-close first-seen events (vRel<-4, v>5). High flips or high
+  late_detect% / low present@slow% = the model is NOT reading the lead
+  reliably (classic RDFM-on-stopped-traffic signature).
+  """
+  out = _routes(args)
+  print(f"{'segment':<30}{'present%':>9}{'slow%':>7}{'pres@slow%':>11}{'flips':>7}{'late%':>7}{'first_d':>8}")
+  for r in out:
+    for seg in r.segs:
+      rows = follow_rows(args.base, r.prefix, [seg], fast=True)
+      if not rows:
+        continue
+      h = lead_health(rows)
+      if not h:
+        continue
+      print(f"{r.prefix}--{seg:<4}{h['present_pct']:>9}{h['slow_pct']:>7}{h['present_at_slow']:>11}"
+            f"{h['flips']:>7}{h['late_detect_pct']:>7}{h['first_d_med']:>8}")
+
+
 def main():
   ap = argparse.ArgumentParser(prog="driveq", description=__doc__,
                                formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -370,6 +401,19 @@ def main():
   p_stops.add_argument("--until", help="ISO time (naive = UTC)")
   p_stops.add_argument("--tz", type=int, help="input offset hours for naive --since/--until (e.g. -7 = PDT); display stays UTC")
   p_stops.set_defaults(fn=cmd_stops)
+
+  p_leadhealth = sub.add_parser("leadhealth", help="lead-detection health per segment",
+                                description="Per segment: present%, slow%, present@slow% "
+                                            "(stopped-lead vision), flips, late_detect%, "
+                                            "first-dRel med. Low present@slow% + high "
+                                            "late_detect% = failed stopped-lead detection "
+                                            "(the RDFM signature).",
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_leadhealth.add_argument("--recent", type=int, help="most recent N routes (default 3)")
+  p_leadhealth.add_argument("--since", help="ISO time (naive = UTC)")
+  p_leadhealth.add_argument("--until", help="ISO time (naive = UTC)")
+  p_leadhealth.add_argument("--tz", type=int, help="input offset hours for naive --since/--until (e.g. -7 = PDT); display stays UTC")
+  p_leadhealth.set_defaults(fn=cmd_leadhealth)
 
   args = ap.parse_args()
   args.fn(args)
