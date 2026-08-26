@@ -45,7 +45,8 @@ BIAS_STEP_SIZE = 0.01
 MPC_RAMP_MIN = 0.4   # m/s^3 at full strength: -0.3 m/s^2 over ~0.75s, clearly gentle
 MPC_RAMP_MAX = 2.5   # m/s^3 at strength 1: -0.3 m/s^2 over ~0.12s, near stock
 APPROACH_GRACE_STEPS = 20
-APPROACH_GRACE_VREL = -1.0  # m/s: lead closing faster than this trips the stand-down
+APPROACH_GRACE_VREL_LO = -0.5  # m/s: closing faster than this starts the stand-down
+APPROACH_GRACE_VREL_HI = -2.0  # m/s: full stand-down at this closure
 
 
 def strength_to_mpc_ramp(strength):
@@ -71,21 +72,24 @@ class E2EBiasController:
     self._mpc_ramp = None
     self._approach_grace = 0
 
-  def apply(self, a_target_e2e: float, lead_closing: bool = False) -> float:
+  def apply(self, a_target_e2e: float, v_rel: float = float('nan')) -> float:
     """Add the speed bias to the model's desired acceleration.
 
-    lead_closing: fused lead present and closing (radarState.leadOne.present
-    AND vRel < -1). When true, the bias's speed hold is scaled down by the
-    Approach Grace setting so the model's early ease-off on a closing lead
-    reads through cleanly (the driver-like "bleed on closure" feel)."""
+    v_rel: fused lead closing speed (radarState.leadOne.vRel, NaN when
+    no lead). Approach Grace scales the speed hold continuously as
+    closure grows: full hold at v_rel >= -0.5, proportionally less down to
+    full stand-down at v_rel <= -2.0 (eager ramp, validated against drive
+    data). NaN (no lead) = full hold. The yielding to the model's ease-off is
+    continuous — no gate state, no hysteresis, no thresholds."""
     self._tick += 1
     if self._tick % self.REFRESH_PERIOD == 0:
       self._refresh()
     b = self._e2e_bias
     if b == 0.0:
       return a_target_e2e
-    if lead_closing and self._approach_grace > 0:
-      b *= (1.0 - self._approach_grace / APPROACH_GRACE_STEPS)
+    if self._approach_grace > 0 and not np.isnan(v_rel):
+      bleed = np.clip((-v_rel - 0.5) / 1.5, 0.0, 1.0)
+      b *= (1.0 - self._approach_grace / APPROACH_GRACE_STEPS * bleed)
       if b == 0.0:
         return a_target_e2e
     # Fade the bias out as soon as the model starts braking: full while the model

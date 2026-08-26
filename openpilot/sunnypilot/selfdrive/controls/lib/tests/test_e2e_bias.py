@@ -167,23 +167,35 @@ class TestE2EBiasController(unittest.TestCase):
   def test_grace_zero_is_noop(self):
     c = make_controller(bias=0.11, strength=11)
     c._approach_grace = 0
-    self.assertAlmostEqual(c.apply(0.5, lead_closing=True), 0.61, places=6)
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-3.0), 0.61, places=6)
 
   def test_grace_scales_bias(self):
     c = make_controller(bias=0.11, strength=11)
     c._approach_grace = 10
-    # half stand-down: 0.11 * 0.5 = 0.055
-    self.assertAlmostEqual(c.apply(0.5, lead_closing=True), 0.555, places=6)
+    # at full closure (v_rel <= -2.0): half stand-down -> 0.11 * 0.5 = 0.055
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.555, places=6)
 
   def test_grace_max_fully_stands_down(self):
     c = make_controller(bias=0.11, strength=11)
     c._approach_grace = 20
-    self.assertAlmostEqual(c.apply(0.5, lead_closing=True), 0.5, places=6)
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.5, places=6)
 
-  def test_grace_only_fires_on_closing(self):
+  def test_grace_ramp_partial(self):
     c = make_controller(bias=0.11, strength=11)
     c._approach_grace = 20
-    self.assertAlmostEqual(c.apply(0.5, lead_closing=False), 0.61, places=6)
+    # at v_rel = -1.0: bleed = (1.0 - 0.5)/1.5 = 1/3 -> b = 0.11 * (1 - 1/3) = 0.07333
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-1.0), 0.5 + 0.11 * (2.0 / 3.0), places=6)
+
+  def test_grace_no_closure_no_fire(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 20
+    # mild positive vRel (lead pulling away) -> no stand-down
+    self.assertAlmostEqual(c.apply(0.5, v_rel=0.5), 0.61, places=6)
+
+  def test_grace_no_lead_nan_no_fire(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 20
+    self.assertAlmostEqual(c.apply(0.5, v_rel=float('nan')), 0.61, places=6)
 
   def test_grace_refresh_reads_param(self):
     c = E2EBiasController(params=MockParams({
