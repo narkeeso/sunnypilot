@@ -207,6 +207,22 @@ class TestE2EBiasController(unittest.TestCase):
     c.apply(0.5)
     self.assertAlmostEqual(c._approach_grace, 7, places=6)
 
+  def test_grace_beyond20_amplifies(self):
+    # grace 30 at full bleed: b = 0.11 * (1 - 30/20 * 1) = 0.11 * (-0.5) = -0.055
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 30
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.5 - 0.055, places=6)
+
+  def test_grace_clamped_at_30(self):
+    c = E2EBiasController(params=MockParams({
+      "LongitudinalE2EBias": "11",
+      "LongitudinalApproachGrace": "50",
+      "LongitudinalE2EBiasTunedFor": "none",
+    }))
+    c._tick = c.REFRESH_PERIOD - 1
+    c.apply(0.5)
+    self.assertEqual(c._approach_grace, 30)
+
   def test_model_change_resets_grace(self):
     bundle = json.dumps({"internalName": "modelA", "generation": 1})
     c = make_controller(bias=0.0, params_values={
