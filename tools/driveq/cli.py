@@ -314,7 +314,7 @@ def cmd_leadhealth(args):
   reliably (classic RDFM-on-stopped-traffic signature).
   """
   out = _routes(args)
-  print(f"{'segment':<30}{'present%':>9}{'slow%':>7}{'pres@slow%':>11}{'flips':>7}{'late%':>7}{'first_d':>8}")
+  print(f"{'segment':<30}{'present%':>9}{'slow%':>7}{'pres@slow%':>11}{'flips':>7}{'late%':>7}{'first_d':>8}{'probMed':>8}{'probP25':>8}{'soft%':>7}")
   for r in out:
     for seg in r.segs:
       rows = follow_rows(args.base, r.prefix, [seg], fast=True)
@@ -324,7 +324,8 @@ def cmd_leadhealth(args):
       if not h:
         continue
       print(f"{r.prefix}--{seg:<4}{h['present_pct']:>9}{h['slow_pct']:>7}{h['present_at_slow']:>11}"
-            f"{h['flips']:>7}{h['late_detect_pct']:>7}{h['first_d_med']:>8}")
+            f"{h['flips']:>7}{h['late_detect_pct']:>7}{h['first_d_med']:>8}"
+            f"{h['prob_med']:>8}{h['prob_p25']:>8}{100*h['soft_frac']:>6.1f}")
 
 
 def main():

@@ -13,10 +13,15 @@ LP = 0.3  # lowpass factor for ttc_dot (matches e2e_bias GAP_TTC_LP)
 
 
 def follow_rows(base, route, segs, fast=True):
-  """Last-known carState/radarState values aligned to each longitudinalPlan."""
+  """Last-known carState/radarState values aligned to each longitudinalPlan.
+
+  Row = (t, vEgo, aTarget, src, dRel, vRel, modelProb, radarMatched).
+  modelProb = vision lead confidence when present (nan if no lead);
+  radarMatched = True if the lead is radar-matched (radar field) vs vision-only."""
   rows = []
   for seg in segs:
-    v = d = vr = np.nan
+    v = d = vr = prob = np.nan
+    isradar = False
     for s, t, msg in iter_msgs(base, route, [seg], ("carState", "radarState", "longitudinalPlan"), fast):
       w = msg.which()
       if w == "carState":
@@ -25,10 +30,12 @@ def follow_rows(base, route, segs, fast=True):
         lo = msg.radarState.leadOne
         d = lo.dRel if lo.present else np.nan
         vr = lo.vRel if lo.present else np.nan
+        prob = lo.modelProb if lo.present else np.nan
+        isradar = bool(lo.radar) if lo.present else False
       elif w == "longitudinalPlan":
         en = msg.longitudinalPlan.longitudinalPlanSource
         src = en.raw if hasattr(en, "raw") else int(en)
-        rows.append([t, v, msg.longitudinalPlan.aTarget, src, d, vr])
+        rows.append([t, v, msg.longitudinalPlan.aTarget, src, d, vr, prob, isradar])
   return rows
 
 
@@ -152,6 +159,13 @@ def lead_health(rows):
   late = sum(1 for d in events if d < 60)
   late_pct = 100.0 * late / len(events) if events else float("nan")
   first_med = float(np.median(events)) if events else float("nan")
+  # vision-confidence metrics (row index 6 = modelProb, 7 = radarMatched)
+  probs = [r[6] for r in rows if r[6] == r[6]]
+  prob_med = float(np.median(probs)) if probs else float("nan")
+  prob_p25 = float(np.percentile(probs, 25)) if probs else float("nan")
+  prec = [r[7] for r in rows if r[6] == r[6]]
+  vision_only_frac = (1.0 - float(np.mean(prec))) if prec else float("nan")
+  soft_frac = (sum(1 for p in probs if p < 0.8) / len(probs)) if probs else float("nan")
   return {
     "present_pct": round(present_pct, 1),
     "slow_pct": round(slow_pct, 1),
@@ -159,6 +173,10 @@ def lead_health(rows):
     "flips": flips,
     "late_detect_pct": round(late_pct, 1),
     "first_d_med": round(first_med, 1),
+    "prob_med": round(prob_med, 2),
+    "prob_p25": round(prob_p25, 2),
+    "vision_only": round(vision_only_frac, 2),
+    "soft_frac": round(soft_frac, 3),
   }
 
 
