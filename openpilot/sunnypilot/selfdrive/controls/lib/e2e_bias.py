@@ -44,8 +44,7 @@ BIAS_STEPS = 20
 BIAS_STEP_SIZE = 0.01
 MPC_RAMP_MIN = 0.4   # m/s^3 at full strength: -0.3 m/s^2 over ~0.75s, clearly gentle
 MPC_RAMP_MAX = 2.5   # m/s^3 at strength 1: -0.3 m/s^2 over ~0.12s, near stock
-APPROACH_GRACE_STEPS = 40  # slider 0..40
-APPROACH_GRACE_FULL = 20   # slider value where the stand-down is complete (bias zeroed during closure)
+APPROACH_GRACE_STEPS = 20  # slider 0..20 (floor 0 = model-default stand-down)
 APPROACH_GRACE_VREL_LO = -0.5  # m/s: closing faster than this starts the stand-down
 APPROACH_GRACE_VREL_HI = -2.0  # m/s: full stand-down at this closure
 
@@ -88,9 +87,9 @@ class E2EBiasController:
     b = self._e2e_bias
     if b == 0.0:
       return a_target_e2e
-    if self._approach_grace > 0 and not np.isnan(v_rel):
+    if not np.isnan(v_rel):
       bleed = np.clip((-v_rel - 0.5) / 1.5, 0.0, 1.0)
-      b *= (1.0 - self._approach_grace / APPROACH_GRACE_FULL * bleed)
+      b *= (1.0 - (1.0 + self._approach_grace / APPROACH_GRACE_STEPS) * bleed)
       if b == 0.0:
         return a_target_e2e
     # Fade the bias out as soon as the model starts braking: full while the model

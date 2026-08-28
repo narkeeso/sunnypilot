@@ -39,14 +39,13 @@ sections:
   - key: LongitudinalApproachGrace
     widget: option
     title: Approach Grace
-    description: "How quickly the car eases off speed when traffic ahead is getting closer. 0 = off (car behaves exactly
-      as before). 10 = half stand-down, 20 = the speed hold yields fully to the model whenever a lead is closing, so its
-      early ease-off reads through cleanly. 21-40 = extra bleed beyond the model (still only while closing).
-      Does not touch braking."
+    description: "Extra early ease-off when traffic ahead is closing. 0 = model default (the speed hold yields fully to
+      the model on approaches). Higher = stronger early bleed on top of the model. 16 is the tuned sweet spot on this
+      car (RAV4 Hybrid). Does not touch braking."
     enablement:
     - $ref: '#/macros/e2e_longitudinal'
     min: 0
-    max: 40
+    max: 20
     step: 1
   - key: DisengageOnAccelerator
     widget: toggle

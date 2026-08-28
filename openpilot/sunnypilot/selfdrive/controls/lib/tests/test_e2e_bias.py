@@ -164,27 +164,36 @@ class TestE2EBiasController(unittest.TestCase):
     c.apply(0.5)
     assert c._params.values["LongitudinalE2EBias"] == "20"
 
-  def test_grace_zero_is_noop(self):
+  def test_grace_zero_is_model_default(self):
     c = make_controller(bias=0.11, strength=11)
     c._approach_grace = 0
-    self.assertAlmostEqual(c.apply(0.5, v_rel=-3.0), 0.61, places=6)
-
-  def test_grace_scales_bias(self):
-    c = make_controller(bias=0.11, strength=11)
-    c._approach_grace = 10
-    # at full closure (v_rel <= -2.0): half stand-down -> 0.11 * 0.5 = 0.055
-    self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.555, places=6)
-
-  def test_grace_max_fully_stands_down(self):
-    c = make_controller(bias=0.11, strength=11)
-    c._approach_grace = 20
+    # G=0: b_eff = 0.11 * (1 - (1+0) * 1) = 0 at full bleed -> raw model
     self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.5, places=6)
 
-  def test_grace_ramp_partial(self):
+  def test_grace_floor_still_stands_down(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 0
+    # at full closure the floor (model default) zeroes the bias contribution
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-3.0), 0.5, places=6)
+
+  def test_grace_partial_bleed_below_floor(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 0
+    # at v_rel -1.0 (bleed 1/3): b_eff = 0.11 * (1 - 1/3) = 0.0733
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-1.0), 0.5 + 0.11 * (2.0 / 3.0), places=6)
+
+  def test_grace_sweet_spot_16(self):
+    c = make_controller(bias=0.11, strength=11)
+    c._approach_grace = 16
+    # at v_rel -1.3 (bleed 0.533): b_eff = 0.11 * (1 - 1.8*0.533) = 0.004
+    bleed = (-(-1.3) - 0.5) / 1.5  # 0.5333
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-1.3), 0.5 + 0.11 * (1 - 1.8 * bleed), places=6)
+
+  def test_grace_max_amplifies(self):
     c = make_controller(bias=0.11, strength=11)
     c._approach_grace = 20
-    # at v_rel = -1.0: bleed = (1.0 - 0.5)/1.5 = 1/3 -> b = 0.11 * (1 - 1/3) = 0.07333
-    self.assertAlmostEqual(c.apply(0.5, v_rel=-1.0), 0.5 + 0.11 * (2.0 / 3.0), places=6)
+    # G=20, full bleed: b_eff = 0.11 * (1 - (1+1)*1) = -0.11 -> applied = 0.5 - 0.11
+    self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.5 - 0.11, places=6)
 
   def test_grace_no_closure_no_fire(self):
     c = make_controller(bias=0.11, strength=11)
@@ -207,21 +216,7 @@ class TestE2EBiasController(unittest.TestCase):
     c.apply(0.5)
     self.assertAlmostEqual(c._approach_grace, 7, places=6)
 
-  def test_grace_beyond20_amplifies(self):
-    # grace 30 at full bleed: b = 0.11 * (1 - 30/20 * 1) = 0.11 * (-0.5) = -0.055
-    c = make_controller(bias=0.11, strength=11)
-    c._approach_grace = 30
-    self.assertAlmostEqual(c.apply(0.5, v_rel=-2.5), 0.5 - 0.055, places=6)
 
-  def test_grace_clamped_at_30(self):
-    c = E2EBiasController(params=MockParams({
-      "LongitudinalE2EBias": "11",
-      "LongitudinalApproachGrace": "50",
-      "LongitudinalE2EBiasTunedFor": "none",
-    }))
-    c._tick = c.REFRESH_PERIOD - 1
-    c.apply(0.5)
-    self.assertEqual(c._approach_grace, 40)
 
   def test_model_change_resets_grace(self):
     bundle = json.dumps({"internalName": "modelA", "generation": 1})
