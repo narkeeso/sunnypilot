@@ -15,17 +15,21 @@ LP = 0.3  # lowpass factor for ttc_dot (matches e2e_bias GAP_TTC_LP)
 def follow_rows(base, route, segs, fast=True):
   """Last-known carState/radarState values aligned to each longitudinalPlan.
 
-  Row = (t, vEgo, aTarget, src, dRel, vRel, modelProb, radarMatched).
+  Row = (t, vEgo, aTarget, src, dRel, vRel, modelProb, radarMatched, brakePressed).
   modelProb = vision lead confidence when present (nan if no lead);
-  radarMatched = True if the lead is radar-matched (radar field) vs vision-only."""
+  radarMatched = True if the lead is radar-matched (radar field) vs vision-only;
+  brakePressed = physical brake pedal switch (the brake-light signal, nan if
+  the field is absent on this car)."""
   rows = []
   for seg in segs:
     v = d = vr = prob = np.nan
     isradar = False
+    bp = np.nan
     for s, t, msg in iter_msgs(base, route, [seg], ("carState", "radarState", "longitudinalPlan"), fast):
       w = msg.which()
       if w == "carState":
         v = msg.carState.vEgo
+        bp = getattr(msg.carState, "brakePressed", np.nan)
       elif w == "radarState":
         lo = msg.radarState.leadOne
         d = lo.dRel if lo.present else np.nan
@@ -35,7 +39,7 @@ def follow_rows(base, route, segs, fast=True):
       elif w == "longitudinalPlan":
         en = msg.longitudinalPlan.longitudinalPlanSource
         src = en.raw if hasattr(en, "raw") else int(en)
-        rows.append([t, v, msg.longitudinalPlan.aTarget, src, d, vr, prob, isradar])
+        rows.append([t, v, msg.longitudinalPlan.aTarget, src, d, vr, prob, isradar, bp])
   return rows
 
 
@@ -119,6 +123,105 @@ def stop_profile(rows, v_thresh=0.4, lookback=1.0):
     amin = min((r[2] for r in window), default=np.nan)
     prof.append((t, amin))
   return prof
+
+
+def oscillation_rows(rows, min_run=5.0, d_lo=15.0, d_hi=90.0, v_min=5.0,
+                      detrend=15, thresh=0.03):
+  """Steady-follow oscillation windows — the "perfect distance" bob metric.
+
+  Finds contiguous runs where a lead is present, vEgo > v_min and dRel in
+  [d_lo, d_hi] for >= min_run seconds. For each run reports the 1-3s-period
+  oscillation in BOTH the command (aTarget) and the physics (vRel):
+
+  - follow_s      : run duration
+  - aCyc / vrCyc  : zero-crossing cycles of the signal after removing the
+                    ~7.5s trend (detrend rows of moving average), counted
+                    against a +/-thresh band around the residual median —
+                    catches 1-3s wobble, ignores slow approach trends
+  - aAmp / vrAmp  : mean |residual| (m/s^2 / m/s) — the wobble amplitude
+  - vEgoPP        : 5-95 percentile spread of vEgo (feel proxy)
+  - dRelPP        : 5-95 percentile spread of dRel
+  - bpTrans       : brakePressed transitions inside the run (brake-light
+                    flicker signal — 0 = the wobble never trips the pedal)
+  - e2e% / lead%  : source mix + lead-present share in the run
+
+  Returns list of dicts (one per window), empty if no qualifying runs.
+  """
+  out = []
+  if not rows:
+    return out
+  ts = np.array([r[0] for r in rows])
+  vs = np.array([r[1] for r in rows])
+  at = np.array([r[2] for r in rows])
+  srcs = np.array([r[3] for r in rows])
+  ds = np.array([r[4] for r in rows])
+  vrs = np.array([r[5] for r in rows])
+  present = np.isfinite(ds) & np.isfinite(vrs)
+  mask = present & (vs > v_min) & (ds >= d_lo) & (ds <= d_hi)
+
+  # contiguous runs
+  runs = []
+  st = None
+  for i in range(len(mask)):
+    if mask[i] and st is None:
+      st = i
+    elif not mask[i] and st is not None:
+      if ts[i - 1] - ts[st] >= min_run:
+        runs.append((st, i))
+      st = None
+  if st is not None and ts[-1] - ts[st] >= min_run:
+    runs.append((st, len(mask)))
+
+  for (s, e) in runs:
+    n = e - s
+    if n <= detrend + 4:
+      continue
+    t = ts[s:e]
+    a = at[s:e]
+    vr = vrs[s:e]
+    vv = vs[s:e]
+    dd = ds[s:e]
+
+    def wobble(x):
+      ker = np.ones(detrend) / detrend
+      trend = np.convolve(x, ker, mode="same")
+      res = x - trend
+      mid = np.median(res[detrend // 2:-(detrend // 2)])
+      prev = None
+      cyc = 0
+      for v in res:
+        b = v > mid + thresh
+        if prev is not None and b != prev:
+          cyc += 1
+        prev = b
+      return cyc // 2, float(np.mean(np.abs(res[detrend // 2:-(detrend // 2)])))
+
+    a_cyc, a_amp = wobble(a)
+    vr_cyc, vr_amp = wobble(vr)
+
+    # brakePressed transitions: read from the raw row (index 8)
+    bp = 0
+    prev_bp = None
+    for r in rows[s:e + 1]:
+      cur = r[8] if len(r) > 8 else None
+      if cur is None or (isinstance(cur, float) and np.isnan(cur)):
+        prev_bp = None
+        continue
+      if prev_bp is not None and cur != prev_bp:
+        bp += 1
+      prev_bp = cur
+
+    out.append({
+      "follow_s": round(t[-1] - t[0], 1),
+      "a_cycles": a_cyc, "a_amp": round(a_amp, 3),
+      "vr_cycles": vr_cyc, "vr_amp": round(vr_amp, 3),
+      "vEgo_pp": round(float(np.percentile(vv, 95) - np.percentile(vv, 5)), 2),
+      "dRel_pp": round(float(np.percentile(dd, 95) - np.percentile(dd, 5)), 2),
+      "bp_trans": bp,
+      "e2e_pct": round(float(np.mean(srcs[s:e] == 4) * 100), 0),
+      "lead_pct": round(float(np.mean(present[s:e]) * 100), 0),
+    })
+  return out
 
 
 def lead_health(rows):

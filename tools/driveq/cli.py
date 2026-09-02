@@ -50,6 +50,13 @@ Usage:
     (flicker), late_detect% + first-dRel med on hard closes. The RDFM-vs-PMV2
     signature: RDFM fails stopped-lead detection (present@slow% low, late% high).
 
+  driveq oscillation [--recent N | --since ISO --until ISO]
+    Steady-follow bob metric: for windows where a lead is present at v>5,
+    dRel 15-90m, reports 1-3s oscillation cycles + amplitude in BOTH aTarget
+    (command) and vRel (physics), vEgo/dRel spread, brakePressed transitions
+    (brake-light flicker), and src mix. bpTr=0 + high cycles = regen-band bob
+    (comfort); bpTr>0 at speed = brake light flickering (real annoyance).
+
 TIME ZONES: device logs are UTC. Naive --since/--until strings are read as
 UTC. Pass --tz HH (e.g. -7 for Pacific summer / PDT) to interpret naive input
 times as that offset (and display the list table in it). Explicit ISO offsets
@@ -72,6 +79,7 @@ from driveq.features import (
   brake_flips,
   follow_rows,
   lead_health,
+  oscillation_rows,
   seg_stats,
   stop_profile,
   ttc,
@@ -328,6 +336,29 @@ def cmd_leadhealth(args):
             f"{h['prob_med']:>8}{h['prob_p25']:>8}{100*h['soft_frac']:>6.1f}")
 
 
+def cmd_oscillation(args):
+  """Steady-follow oscillation per segment — the "perfect distance" bob.
+
+  Finds windows where a lead is present, v>5 m/s, dRel 15-90m for >=5s, then
+  reports the 1-3s-period wobble in aTarget (command) AND vRel (physics):
+  cycles + amplitude per window, vEgo/dRel peak-peak spread, brakePressed
+  transitions (0 = brake light never trips during the bob), and src mix.
+  High aCyc/aAmp with bpTrans=0 = regen-band bob (comfort nit, no light);
+  bpTrans>0 at speed = the brake light IS flickering (the real annoyance).
+  """
+  out = _routes(args)
+  print(f"{'segment':<30}{'follS':>6}{'aCyc':>5}{'aAmp':>6}{'vrCyc':>6}{'vrAmp':>6}{'vPP':>5}{'dPP':>5}{'bpTr':>5}{'e2e%':>5}")
+  for r in out:
+    for seg in r.segs:
+      rows = follow_rows(args.base, r.prefix, [seg], fast=True)
+      if not rows:
+        continue
+      for w in oscillation_rows(rows):
+        print(f"{r.prefix}--{seg:<4}{w['follow_s']:>6}{w['a_cycles']:>5}{w['a_amp']:>6}"
+              f"{w['vr_cycles']:>6}{w['vr_amp']:>6}{w['vEgo_pp']:>5}{w['dRel_pp']:>5}"
+              f"{w['bp_trans']:>5}{w['e2e_pct']:>4.0f}")
+
+
 def main():
   ap = argparse.ArgumentParser(prog="driveq", description=__doc__,
                                formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -415,6 +446,20 @@ def main():
   p_leadhealth.add_argument("--until", help="ISO time (naive = UTC)")
   p_leadhealth.add_argument("--tz", type=int, help="input offset hours for naive --since/--until (e.g. -7 = PDT); display stays UTC")
   p_leadhealth.set_defaults(fn=cmd_leadhealth)
+
+  p_osc = sub.add_parser("oscillation", help="steady-follow bob (aTarget + vRel cycles)",
+                         description="Per segment: steady-follow windows (lead, v>5, "
+                                     "dRel 15-90m, >=5s) with 1-3s oscillation cycles/"
+                                     "amplitude in aTarget and vRel, vEgo/dRel spread, "
+                                     "brakePressed transitions, e2e%. bpTr>0 = brake "
+                                     "light flickers; bpTr=0 + high cycles = regen-band "
+                                     "bob (comfort only).",
+                         formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_osc.add_argument("--recent", type=int, help="most recent N routes (default 3)")
+  p_osc.add_argument("--since", help="ISO time (naive = UTC)")
+  p_osc.add_argument("--until", help="ISO time (naive = UTC)")
+  p_osc.add_argument("--tz", type=int, help="input offset hours for naive --since/--until (e.g. -7 = PDT); display stays UTC")
+  p_osc.set_defaults(fn=cmd_oscillation)
 
   args = ap.parse_args()
   args.fn(args)
