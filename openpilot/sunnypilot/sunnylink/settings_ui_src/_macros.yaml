@@ -17,6 +17,15 @@ macros:
   longitudinal:
     - {type: capability, field: has_longitudinal_control, equals: true}
 
+  # E2E bias tuning is an alternative to Dynamic Experimental Control: it only
+  # applies when full E2E longitudinal is active (alpha + ExperimentalMode) and
+  # DEC is off (conflicting driver of the same behavior).
+  e2e_longitudinal:
+    - {type: capability, field: has_longitudinal_control, equals: true}
+    - {type: param, key: ExperimentalMode, equals: true}
+    - type: not
+      condition: {type: param, key: DynamicExperimentalControl, equals: true}
+
   # Longitudinal + ICBM both available.
   longitudinal_and_icbm:
     - {type: capability, field: has_longitudinal_control, equals: true}

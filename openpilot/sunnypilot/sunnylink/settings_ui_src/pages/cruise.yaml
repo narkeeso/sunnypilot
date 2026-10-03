@@ -24,6 +24,29 @@ sections:
     - $ref: '#/macros/longitudinal'
     enablement:
     - $ref: '#/macros/longitudinal'
+  - key: LongitudinalE2EBias
+    widget: option
+    title: E2E Speed Bias
+    description: "An alternative to Dynamic Experimental Control (needs experimental mode, DEC off). Tunes how strongly
+      E2E holds your set speed: positive strength keeps the car closer to your set cruise when the model would ease off;
+      negative lets the model drive its own pace. 0 is neutral. Blends out before braking, so stops and following traffic
+      are unchanged."
+    enablement:
+    - $ref: '#/macros/e2e_longitudinal'
+    min: -20
+    max: 20
+    step: 1
+  - key: LongitudinalApproachGrace
+    widget: option
+    title: Approach Grace
+    description: "Extra early ease-off when traffic ahead is closing. 0 = model default (the speed hold yields fully to
+      the model on approaches). Higher = stronger early bleed on top of the model. 16 is the tuned sweet spot on this
+      car (RAV4 Hybrid). Does not touch braking."
+    enablement:
+    - $ref: '#/macros/e2e_longitudinal'
+    min: 0
+    max: 20
+    step: 1
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal
@@ -200,7 +223,7 @@ sections:
       widget: option
       title: Speed Limit Offset Value
       min: -30
-      max: 30
+      max: 40
       step: 1
       unit:
         metric: km/h
