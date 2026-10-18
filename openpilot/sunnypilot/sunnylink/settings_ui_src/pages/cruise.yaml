@@ -11,28 +11,14 @@ sections:
   title: ''
   description: ''
   items:
-  - key: ExperimentalMode
-    widget: toggle
-    title: Experimental Mode
-    enablement:
-    - $ref: '#/macros/longitudinal'
-  - key: DynamicExperimentalControl
-    widget: toggle
-    title: Dynamic Experimental Control
-    description: Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal.
-    visibility:
-    - $ref: '#/macros/longitudinal'
-    enablement:
-    - $ref: '#/macros/longitudinal'
   - key: LongitudinalE2EBias
     widget: option
     title: E2E Speed Bias
-    description: "An alternative to Dynamic Experimental Control (needs experimental mode, DEC off). Tunes how strongly
-      E2E holds your set speed: positive strength keeps the car closer to your set cruise when the model would ease off;
-      negative lets the model drive its own pace. 0 is neutral. Blends out before braking, so stops and following traffic
-      are unchanged."
+    description: "Tunes how strongly E2E holds your set speed: positive strength keeps the car closer to your set cruise
+      when the model would ease off; negative lets the model drive its own pace. 0 is neutral. Blends out before braking,
+      so stops are unchanged. Positive strength also softens how quickly braking builds behind a lead."
     enablement:
-    - $ref: '#/macros/e2e_longitudinal'
+    - $ref: '#/macros/longitudinal'
     min: -20
     max: 20
     step: 1
@@ -41,9 +27,9 @@ sections:
     title: Approach Grace
     description: "Extra early ease-off when traffic ahead is closing. 0 = model default (the speed hold yields fully to
       the model on approaches). Higher = stronger early bleed on top of the model. 16 is the tuned sweet spot on this
-      car (RAV4 Hybrid). Does not touch braking."
+      car (RAV4 Hybrid). Only acts when E2E Speed Bias is non-zero."
     enablement:
-    - $ref: '#/macros/e2e_longitudinal'
+    - $ref: '#/macros/longitudinal'
     min: 0
     max: 20
     step: 1
@@ -203,12 +189,28 @@ sections:
         label: Car State Only
       - value: 1
         label: Map Data Only
+        enablement:
+        - type: capability
+          field: mapd_available
+          equals: true
       - value: 2
         label: Car State Priority
+        enablement:
+        - type: capability
+          field: mapd_available
+          equals: true
       - value: 3
         label: Map Data Priority
+        enablement:
+        - type: capability
+          field: mapd_available
+          equals: true
       - value: 4
         label: Combined
+        enablement:
+        - type: capability
+          field: mapd_available
+          equals: true
     - key: SpeedLimitOffsetType
       widget: multiple_button
       title: Speed Limit Offset Type
@@ -282,6 +284,9 @@ sections:
         field: has_icbm
         equals: true
     enablement:
+    - type: capability
+      field: mapd_available
+      equals: true
     - type: any
       conditions:
       - type: capability
