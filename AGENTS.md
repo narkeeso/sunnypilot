@@ -8,7 +8,7 @@ Fork-specific facts for agents working on narkeeso/sunnypilot. Read before reaso
 - With alpha longitudinal on, openpilot **silences the radar** (`DISABLE_RADAR` flag → `disable_ecu(... addr=0x750, sub_addr=0xf, ENABLE_RX_DISABLE_TX)` in opendbc `toyota/interface.py`). Stock Toyota AEB / Pre-Collision is off while openpilot controls speed.
 - openpilot can't parse TSS2 radar-ACC tracks anyway (`radarUnavailable: True`).
 - So **the MPC follows the camera's lead estimate**, never radar. `radarState.leadOne.radar` is always False (0% radar-matched across all logged drives). Do not reason about radar tracks, radar `aLeadTau` (1.5), or "radar takes over" for this car.
-- Vision lead path: `get_RadarState_from_vision` in `openpilot/selfdrive/controls/radard.py`. This fork sets its `aLeadTau` to 0.0 (stock 0.3) so the MPC assumes a braking lead keeps braking.
+- Vision lead path: `get_RadarState_from_vision` in `openpilot/selfdrive/controls/radard.py`. `aLeadTau` is stock 0.3. Setting it to 0.0 (assume a braking lead keeps braking) was tried 2026-10-19 and reverted: no felt improvement, and it risks over-braking for leads slowing to turn off.
 - Without alpha long, Toyota's own radar ACC controls speed and openpilot only steers.
 
 ## Longitudinal planner shape
@@ -19,7 +19,7 @@ E2E is always on (upstream removed Experimental Mode and DEC). The planner takes
 2. `E2EBiasController.apply_mpc()`: MPC braking-onset ramp, tied to the bias slider.
 3. Upstream `AccelBoost` (gas-override learned boost) stacks on top of the biased model accel.
 
-Harsh stops behind cars come from late camera recognition of a stopping lead, then the MPC catching up. Moving the stop target closer (extra stop margin) made it worse in simulation.
+Harsh stops behind cars come from late camera recognition of a stopping lead, then the MPC catching up. The limit is the model's anticipation, not planner tuning: an extra stop margin made it worse in simulation, and `aLeadTau` 0.0 didn't help on the road. Compare models' stopped-lead recognition instead.
 
 ## Logs and analysis
 

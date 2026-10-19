@@ -146,8 +146,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
     "vLead": float(v_ego + lead_v_rel_pred),
     "vLeadK": float(v_ego + lead_v_rel_pred),
     "aLeadK": float(lead_msg.a[0]),
-    # Vision recognizes a stopping lead late; assume its braking persists so the MPC starts braking sooner.
-    "aLeadTau": 0.0,
+    "aLeadTau": 0.3,
     "modelProb": float(lead_prob),
     "present": True,
     "radar": False,
