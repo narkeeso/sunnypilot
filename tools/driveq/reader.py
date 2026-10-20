@@ -3,12 +3,13 @@
 Gotchas baked in:
 - segment dirs are `route--hash--seg`; logs match `startswith("rlog"/"qlog")`
   (`.endswith(".rlog.zst")` does NOT match)
-- qlog = reduced (~20Hz, fast scans); rlog = full (~100Hz, slow — only for
+- qlog = reduced (fast scans): carState/carControl ~10 Hz, radarState ~4 Hz,
+  longitudinalPlan ~2 Hz, NO modelV2; rlog = full rate (slow — only for
   small windows)
 - t = logMonoTime/1e9 seconds, RELATIVE to the first message of each segment
   (logMonoTime is monotonic since boot, not wall-clock)
 - longitudinalPlanSource is a capnp enum: use `.raw`
-- radar leadOne may be absent (dRel/vRel NaN) — ~19% of samples on highway
+- leadOne (vision-only on this car) may be absent (dRel/vRel NaN)
 """
 import os
 

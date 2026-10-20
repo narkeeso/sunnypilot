@@ -3,16 +3,12 @@
 Facts baked in from real-world use:
 - realdata holds FLAT segment dirs `route--hash--seg` (no route grouping)
 - device clock is UTC; naive ISO inputs are interpreted as UTC
-- segment dir mtimes are the reliable wall-clock anchor (epoch)
+- segment dir mtimes are the wall-clock anchor (epoch); outliers from an
+  unsynced clock are ignored for start/end, never dropped as segments
 """
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-
-import numpy as np
-from openpilot.tools.lib.logreader import LogReader
-
-from driveq.reader import logfile
 
 
 @dataclass
@@ -23,28 +19,13 @@ class Route:
   end_epoch: float
 
 
-def _seg_wallclock(base, route, seg):
-  """Wall-clock (epoch) from the Clocks message inside the log. Expensive
-  (~0.25s/segment: full read until the clocks message) — only for disambiguating
-  routes whose mtimes are inconsistent. Falls back to dir mtime."""
-  fn = logfile(base, route, seg, fast=True)
-  if fn is not None:
-    try:
-      for msg in LogReader(fn):
-        if msg.which() == "clocks":
-          nanos = msg.clocks.wallTimeNanos
-          if nanos > 0:
-            return nanos / 1e9
-    except (ValueError, OSError):
-      pass
-  return os.stat(os.path.join(base, f"{route}--{seg}")).st_mtime
-
-
 def scan(base):
-  """Group flat `route--hash--seg` dirs into Route objects. FAST PATH: segment
-  dir mtimes (instant) + median guard, which is correct except for the rare
-  stale-dir route (same hash, old recording — seen in realdata). For those,
-  read the Clocks message from first/mid/last segs to disambiguate."""
+  """Group flat `route--hash--seg` dirs into Route objects (all segments kept).
+
+  start/end come from segment dir mtimes near the median mtime: a segment
+  recorded before the clock synced can carry a months-off mtime (seen on
+  000001d4: seg 29 dated Jul 28), and taking min/max over it would make the
+  route overlap every --since/--until window back to that date."""
   routes = {}
   for d in os.listdir(base):
     parts = d.split("--")
@@ -66,26 +47,12 @@ def scan(base):
   for r in routes.values():
     r.segs.sort()
     mtimes = [os.stat(os.path.join(base, f"{r.prefix}--{s}")).st_mtime for s in r.segs]
-    if len(mtimes) >= 3:
-      med = float(np.median(mtimes))
-      spread = max(mtimes) - min(mtimes)
-      if spread < 7200.0:
-        good = [(t, s) for t, s in zip(mtimes, r.segs)]
-      else:
-        # suspicious: some segs are weeks out of family — use log clocks to
-        # find the true cluster (fast only on the 3 probes)
-        probes = {r.segs[0], r.segs[len(r.segs) // 2], r.segs[-1]}
-        wall = {s: _seg_wallclock(base, r.prefix, s) for s in probes}
-        med = float(np.median(list(wall.values())))
-        good = [(t, s) for t, s in zip(mtimes, r.segs) if abs(t - med) < 7200.0]
-        if len(good) < 2:
-          # clocks disagreed too; fall back to mtimes minus the worst outlier
-          good = [(t, s) for t, s in zip(mtimes, r.segs) if abs(t - med) < 3 * spread]
-    else:
-      good = [(t, s) for t, s in zip(mtimes, r.segs)]
-    r.segs = [s for _, s in good]
-    r.start_epoch = min(t for t, _ in good)
-    r.end_epoch = max(t for t, _ in good)
+    # a real element (not a midpoint between two) so `near` is never empty
+    med = sorted(mtimes)[len(mtimes) // 2]
+    # segments are 60 s apart, so the whole route fits within ~75 s x n of the median
+    near = [t for t in mtimes if abs(t - med) < 75.0 * len(mtimes)]
+    r.start_epoch = min(near)
+    r.end_epoch = max(near)
   return routes
 
 
@@ -99,8 +66,13 @@ def to_epoch(iso, tz=None):
   return dt.timestamp()
 
 
-def filter_routes(routes, since=None, until=None, recent=None):
-  """Filter by wall-clock window (epoch), or take the most recent N."""
+def filter_routes(routes, since=None, until=None, recent=None, prefixes=None):
+  """Filter by explicit route prefixes, wall-clock window (epoch), or most recent N."""
+  if prefixes:
+    missing = [p for p in prefixes if p not in routes]
+    if missing:
+      raise SystemExit(f"route not found: {', '.join(missing)}")
+    return [routes[p] for p in prefixes]
   out = sorted(routes.values(), key=lambda r: r.start_epoch)
   if since is not None:
     out = [r for r in out if r.end_epoch >= since]

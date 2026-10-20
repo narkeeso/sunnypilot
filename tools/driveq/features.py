@@ -1,7 +1,8 @@
 """Composite rows for longitudinal analysis.
 
-The aligned (t, vEgo, aTarget, src, dRel, vRel) stream is the shape we kept
-building by hand all session. Units: vEgo m/s, aTarget m/s^2, dRel m, vRel m/s.
+The aligned (t, vEgo, aTarget, src, dRel, vRel, ...) stream is the shape we kept
+building by hand all session. Units: vEgo m/s, aTarget/aEgo m/s^2, dRel m, vRel m/s.
+Leads are vision-only on this car (radarState leadOne comes from the model).
 src: 0=cruise, 1-3=lead0/1/2 (MPC), 4=e2e.
 """
 import numpy as np
@@ -13,23 +14,35 @@ LP = 0.3  # lowpass factor for ttc_dot (matches e2e_bias GAP_TTC_LP)
 
 
 def follow_rows(base, route, segs, fast=True):
-  """Last-known carState/radarState values aligned to each longitudinalPlan.
+  """Last-known carState/radarState/carControl values aligned to each longitudinalPlan.
 
-  Row = (t, vEgo, aTarget, src, dRel, vRel, modelProb, radarMatched, brakePressed).
+  Row = (t, vEgo, aTarget, src, dRel, vRel, modelProb, radarMatched, brakePressed,
+         longActive, aEgoMin).
   modelProb = vision lead confidence when present (nan if no lead);
-  radarMatched = True if the lead is radar-matched (radar field) vs vision-only;
-  brakePressed = physical brake pedal switch (the brake-light signal, nan if
-  the field is absent on this car)."""
+  radarMatched = radar field (always False on this car: leads are vision-only);
+  brakePressed = driver brake pedal pressed at any carState since the previous row
+  (NOT the brake lights; openpilot braking leaves it False);
+  longActive = openpilot long control active at every carControl since the
+  previous row (False until the first carControl);
+  aEgoMin = min measured carState.aEgo since the previous row (carState is
+  ~10 Hz vs the ~2 Hz plan in qlogs, so this keeps the felt peak)."""
   rows = []
   for seg in segs:
-    v = d = vr = prob = np.nan
+    v = d = vr = prob = ae = np.nan
     isradar = False
-    bp = np.nan
-    for s, t, msg in iter_msgs(base, route, [seg], ("carState", "radarState", "longitudinalPlan"), fast):
+    la = None
+    # accumulated between plan rows so a short brake tap or disengage isn't missed
+    bp_any, la_all, ae_min = False, True, np.inf
+    for s, t, msg in iter_msgs(base, route, [seg], ("carState", "carControl", "radarState", "longitudinalPlan"), fast):
       w = msg.which()
       if w == "carState":
         v = msg.carState.vEgo
-        bp = getattr(msg.carState, "brakePressed", np.nan)
+        ae = msg.carState.aEgo
+        ae_min = min(ae_min, ae)
+        bp_any = bp_any or bool(msg.carState.brakePressed)
+      elif w == "carControl":
+        la = bool(msg.carControl.longActive)
+        la_all = la_all and la
       elif w == "radarState":
         lo = msg.radarState.leadOne
         d = lo.dRel if lo.present else np.nan
@@ -39,8 +52,28 @@ def follow_rows(base, route, segs, fast=True):
       elif w == "longitudinalPlan":
         en = msg.longitudinalPlan.longitudinalPlanSource
         src = en.raw if hasattr(en, "raw") else int(en)
-        rows.append([t, v, msg.longitudinalPlan.aTarget, src, d, vr, prob, isradar, bp])
+        rows.append([t, v, msg.longitudinalPlan.aTarget, src, d, vr, prob, isradar, bp_any,
+                     la_all and la is True, ae_min if ae_min < np.inf else ae])
+        bp_any, la_all, ae_min = False, True, np.inf
   return rows
+
+
+def engaged(row):
+  """openpilot was in control: long active and the driver not braking."""
+  return row[9] and not row[8]
+
+
+def route_rows(base, route, segs, fast=True):
+  """follow_rows for a whole route as (seg, tg, row), tg = route-relative s.
+
+  shortcut: tg = seg*60 + t assumes 60 s segments (openpilot rotates on that),
+  so ~1 s error across a boundary; fine for 3-15 s windows, use logMonoTime if
+  sub-second cross-segment timing ever matters."""
+  out = []
+  for seg in segs:
+    for r in follow_rows(base, route, [seg], fast):
+      out.append((seg, seg * 60.0 + r[0], r))
+  return out
 
 
 def ttc(row, min_v=0.5):
@@ -102,27 +135,71 @@ def brake_episodes(rows, thresh=-0.12):
   return eps
 
 
-def stops(rows, v_thresh=0.4):
-  """Stop events: vEgo crossing below v_thresh. Returns list of (t, v_at_event)."""
+def stop_profile(rr, v_thresh=0.4, lookback=3.0):
+  """Stops in route rows rr (from route_rows), with the felt bite.
+
+  A stop = vEgo drops below v_thresh from a valid vEgo >= v_thresh on the
+  previous row of the SAME segment (a segment that starts already stopped is
+  not a stop). Returns (stops, skipped): stops = [(seg, t, aEgoMin, aTargetMin)]
+  over the last `lookback` s where openpilot was in control the whole
+  approach; skipped = count of stops with the driver braking or long inactive."""
   out = []
-  prev = False
-  for r in rows:
-    below = r[1] < v_thresh
-    if below and not prev:
-      out.append((r[0], r[1]))
-    prev = below
+  skipped = 0
+  for i in range(1, len(rr)):
+    seg, tg, r = rr[i]
+    pseg, _, pr = rr[i - 1]
+    if not (r[1] < v_thresh and pseg == seg and pr[1] >= v_thresh):  # nan vEgo fails >=
+      continue
+    win = [x[2] for x in rr[max(0, i - 40):i + 1] if tg - lookback <= x[1] <= tg]  # 40 rows > lookback at 2 Hz
+    if not all(engaged(x) for x in win):
+      skipped += 1
+      continue
+    out.append((seg, r[0], min(x[10] for x in win), min(x[2] for x in win)))
+  return out, skipped
+
+
+def phantom_episodes(rr, min_decel=-0.6, min_v=2.0, far_lead=60.0, stop_ahead=15.0,
+                     gap=2.0, settle=1.0):
+  """Phantom braking episodes in route rows rr (from route_rows).
+
+  A row is a hit when openpilot is in control, measured aEgo <= min_decel at
+  v > min_v, and there is no lead to brake for: none present, or one that is
+  opening (vRel > -0.5) and farther than far_lead. Rows in the first `settle`
+  s of a segment are ignored (radarState not yet seen, so dRel reads nan).
+  Hits within `gap` s form one episode. Episodes followed by vEgo < 0.5
+  within stop_ahead s are dropped as light/stop-sign stops. Returns
+  [dict(seg, t, dur, aEgoMin, v, dRel, vRel, src)]."""
+  def hit(r):
+    if r[0] < settle or not engaged(r) or not (r[10] <= min_decel and r[1] > min_v):
+      return False
+    d, vr = r[4], r[5]
+    return d != d or (vr > -0.5 and d > far_lead)
+
+  eps = []
+  cur = None  # [first idx, last idx]
+  for i, (seg, tg, r) in enumerate(rr):
+    if r[0] < settle:
+      continue  # neither hit nor miss: don't split an episode across a boundary
+    if hit(r):
+      if cur is not None and tg - rr[cur[1]][1] <= gap:
+        cur[1] = i
+      else:
+        if cur is not None:
+          eps.append(cur)
+        cur = [i, i]
+  if cur is not None:
+    eps.append(cur)
+
+  out = []
+  for a, b in eps:
+    t_end = rr[b][1]
+    if any(x[2][1] < 0.5 for x in rr[b:b + 100] if x[1] <= t_end + stop_ahead):  # 100 rows > stop_ahead at 2 Hz
+      continue
+    seg, tg, r = rr[a]
+    out.append({"seg": seg, "t": r[0], "dur": t_end - tg,
+                "aEgoMin": min(x[2][10] for x in rr[a:b + 1]),
+                "v": r[1], "dRel": r[4], "vRel": r[5], "src": r[3]})
   return out
-
-
-def stop_profile(rows, v_thresh=0.4, lookback=1.0):
-  """Per stop: deepest aTarget in the last `lookback` s before the stop."""
-  evs = stops(rows, v_thresh)
-  prof = []
-  for t, _ in evs:
-    window = [r for r in rows if t - lookback <= r[0] <= t]
-    amin = min((r[2] for r in window), default=np.nan)
-    prof.append((t, amin))
-  return prof
 
 
 def oscillation_rows(rows, min_run=5.0, d_lo=15.0, d_hi=90.0, v_min=5.0,
@@ -157,7 +234,8 @@ def oscillation_rows(rows, min_run=5.0, d_lo=15.0, d_hi=90.0, v_min=5.0,
   ds = np.array([r[4] for r in rows])
   vrs = np.array([r[5] for r in rows])
   present = np.isfinite(ds) & np.isfinite(vrs)
-  mask = present & (vs > v_min) & (ds >= d_lo) & (ds <= d_hi)
+  eng = np.array([bool(engaged(r)) for r in rows])
+  mask = present & eng & (vs > v_min) & (ds >= d_lo) & (ds <= d_hi)
 
   # contiguous runs
   runs = []
@@ -227,7 +305,7 @@ def oscillation_rows(rows, min_run=5.0, d_lo=15.0, d_hi=90.0, v_min=5.0,
 def lead_health(rows):
   """Lead-detection metrics for a segment. Rows: (t, vEgo, aTarget, src, dRel, vRel).
 
-  Answers: does the model/radar pipeline actually SEE the lead?
+  Answers: does the model actually SEE the lead (vision-only on this car)?
   - present%        : share of rows with dRel cleared (present lead)
   - slow%           : share of rows vEgo < 3 m/s (stopped/crawling behind traffic)
   - present@slow%   : lead present AMONG slow rows — the stopped-lead vision test
@@ -235,8 +313,10 @@ def lead_health(rows):
   - late_detect%    : of hard-close first-seen events (vRel < -4, v>5), share where
                       the lead first appeared at dRel < 60m (early is 60m+)
   - first_d_med     : median first-seen dRel of hard-close events
+  Only rows where openpilot was in control (see engaged) count.
   Returns dict of metrics (or None if segment has too few rows).
   """
+  rows = [r for r in rows if engaged(r)]
   if len(rows) < 60:
     return None
   n = len(rows)
@@ -286,6 +366,9 @@ def lead_health(rows):
 def seg_stats(rows):
   """Compact per-segment metrics: rows, episodes, min depth, flips, brake %, src, lead%."""
   from collections import Counter
+  # shortcut: dropping driver-controlled rows joins the engaged rows on either
+  # side, so an episode can span a disengagement; split runs on gaps if that matters
+  rows = [r for r in rows if engaged(r)]
   eps = brake_episodes(rows)
   flips = brake_flips(rows)
   brk = sum(1 for r in rows if r[2] <= -0.12)

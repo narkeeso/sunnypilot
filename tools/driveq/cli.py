@@ -6,12 +6,17 @@ Layers: phantom / stats / ttc / stops — segment-level FILTERS that answer
 
 GOTCHAS (baked in, do not re-learn):
 - realdata = flat `route--hash--seg` dirs; route = first two `--` parts
-- wall time = Clocks.wallTimeNanos inside the log (dir mtimes unreliable);
-  stale segments (>2h from cluster median) are dropped by scan()
+- wall time = segment dir mtimes; scan() takes route start/end from the
+  mtimes near the median (an unsynced-clock segment can be months off) and
+  never drops segments. Prefer --route to pick drives explicitly.
 - t is seg-relative seconds (logMonoTime/1e9, monotonic since boot)
 - vEgo m/s, vCruise KPH, aTarget m/s^2
 - src: 0=cruise 1-3=lead-mpc 4=e2e
-- qlog ~20Hz fast scans (default); rlog ~100Hz slow, only small windows
+- qlog (default, fast): carState/carControl ~10 Hz, radarState ~4 Hz,
+  longitudinalPlan ~2 Hz, NO modelV2. rlog: full rate, slow, small windows only
+- leads are vision-only on this car (radarUnavailable): "lead" never means radar
+- every metric except dump/ttc skips rows where openpilot was not in control
+  (carControl.longActive False or carState.brakePressed True)
 
 Usage:
   driveq list [--recent N | --since ISO --until ISO] [--tz HH] [--base DIR]
@@ -23,34 +28,36 @@ Usage:
     This is the "profile" layer — use it to trace a window after a filter
     flags a segment.
 
-  driveq phantom [--recent N | --since ISO --until ISO]
-                 [--min-decel -0.6] [--min-v 2.0] [--lead-sane 20.0]
-    Segments with phantom braking: aTarget <= min-decel while no close lead
-    (absent or dRel > lead-sane). Columns: segment, samples, aMin, v@evt,
-    dRel@evt. dRel=nan means NO lead at all (true phantom); a number means
-    far-lead early braking (the other annoyance class).
+  driveq phantom [--route PREFIX | --recent N | --since ISO --until ISO]
+                 [--min-decel -0.6] [--min-v 2.0] [--far-lead 60.0]
+    Phantom braking EPISODES: measured aEgo <= min-decel while engaged and no
+    lead to brake for (none, or opening and > far-lead m), excluding episodes
+    that end in a stop within 15 s (lights/stop signs). One row per episode:
+    segment, t, dur, aMin, v, dRel, vRel, src. dRel=nan = no lead at all.
 
-  driveq stats [--recent N | --since ISO --until ISO]
+  driveq stats [--route PREFIX | --recent N | --since ISO --until ISO]
     Per-segment: rows, episodes (consecutive a<=-0.12 runs), minA, flips
     (brake-state transitions — the highway-pulse metric), brk% (share of time
-    a<=-0.12), lead% (share with a radar lead), dominant src.
+    a<=-0.12), lead% (share with a lead, vision-only on this car), dominant src.
 
   driveq ttc --route PREFIX --segs "0-5" [--series]
     Default: noise summary — ttc range, raw |ttc_dot| med/p90/p99/max, and
     lowpassed same. --series: per-sample rows (t, v, dRel, ttc, dot_raw, dot_lp).
     Use for sizing controller deadbands; the gap-law deadband is 0.1 s/s.
 
-  driveq stops [--recent N | --since ISO --until ISO]
-    Per-segment: stop count (vEgo crossing <0.4) and deepest aTarget in the
-    1s before each stop (the "bite" metric).
+  driveq stops [--route PREFIX | --recent N | --since ISO --until ISO]
+    One row per stop (vEgo crossing <0.4 within a segment) with openpilot in
+    control for the last 3 s: min measured aEgo (the felt "bite") and min
+    aTarget (requested) over those 3 s. Summary counts stops skipped for
+    driver braking / long inactive.
 
-  driveq leadhealth [--recent N | --since ISO --until ISO]
+  driveq leadhealth [--route PREFIX | --recent N | --since ISO --until ISO]
     Lead-detection health per segment: present%, slow%, present@slow% (lead
     among stopped/slow frames — the model's stopped-lead vision), flips
     (flicker), late_detect% + first-dRel med on hard closes. The RDFM-vs-PMV2
     signature: RDFM fails stopped-lead detection (present@slow% low, late% high).
 
-  driveq oscillation [--recent N | --since ISO --until ISO]
+  driveq oscillation [--route PREFIX | --recent N | --since ISO --until ISO]
     Steady-follow bob metric: for windows where a lead is present at v>5,
     dRel 15-90m, reports 1-3s oscillation cycles + amplitude in BOTH aTarget
     (command) and vRel (physics), vEgo/dRel spread, brakePressed transitions
@@ -80,12 +87,13 @@ from driveq.features import (
   follow_rows,
   lead_health,
   oscillation_rows,
+  phantom_episodes,
+  route_rows,
   seg_stats,
   stop_profile,
   ttc,
   ttc_series,
 )
-from driveq.reader import iter_msgs
 
 
 def _routes(args, default_recent=3):
@@ -94,9 +102,10 @@ def _routes(args, default_recent=3):
   since = to_epoch(args.since, tz=tz) if getattr(args, "since", None) else None
   until = to_epoch(args.until, tz=tz) if getattr(args, "until", None) else None
   recent = getattr(args, "recent", None)
-  if recent is None and since is None and until is None:
+  prefixes = [p.strip() for spec in (getattr(args, "route", None) or []) for p in spec.split(",") if p.strip()]
+  if recent is None and since is None and until is None and not prefixes:
     recent = default_recent
-  return filter_routes(routes, since=since, until=until, recent=recent)
+  return filter_routes(routes, since=since, until=until, recent=recent, prefixes=prefixes)
 
 
 def _parse_segs(spec):
@@ -187,51 +196,29 @@ def cmd_dump(args):
     print(f"\nrows={len(rows)} flips={brake_flips(rows)}")
 
 
-def _phantom_in_seg(base, route, seg, min_decel, min_v, lead_sane):
-  """Count phantom samples: aTarget <= min_decel with no close lead. Fast (qlog)."""
-  events = []
-  v = d = np.nan
-  lead = False
-  for s, t, msg in iter_msgs(base, route, [seg], ("carState", "radarState", "longitudinalPlan"), fast=True):
-    w = msg.which()
-    if w == "carState":
-      v = msg.carState.vEgo
-    elif w == "radarState":
-      lo = msg.radarState.leadOne
-      lead = lo.present
-      d = lo.dRel if lo.present else np.nan
-    elif w == "longitudinalPlan":
-      a = msg.longitudinalPlan.aTarget
-      if a <= min_decel and v > min_v and ((not lead) or (not np.isnan(d) and d > lead_sane)):
-        events.append((t, a, v, d))
-  return events
-
-
 def cmd_phantom(args):
-  """Print segments with phantom braking in scope.
+  """Print phantom braking episodes in scope, one row per episode.
 
-  Phantom = aTarget <= --min-decel while v > --min-v and no close lead
-  (lead absent, or dRel > --lead-sane). Columns: segment, sample count,
-  deepest decel, v at first event, dRel at first event.
-  dRel=nan → true phantom (model braking, nothing on radar);
-  dRel>0 at 45-95m → far-lead early braking (the other annoyance class).
+  Phantom = measured aEgo <= --min-decel at v > --min-v while openpilot is in
+  control and there is no lead to brake for (none present, or opening with
+  vRel > -0.5 and farther than --far-lead). Episodes that end in a stop
+  within 15 s are dropped (model stopping for lights/stop signs).
+  Columns: segment, t (seg-relative s), dur, aMin (aEgo), v, dRel, vRel, src
+  at episode start. dRel=nan = no lead at all.
   """
   out = _routes(args)
   total = 0
-  seg_hits = 0
-  print(f"{'segment':<30}{'samples':>8}{'aMin':>7}{'v@evt':>7}{'dRel':>7}")
+  print(f"{'segment':<30}{'t':>6}{'dur':>5}{'aMin':>7}{'v':>6}{'dRel':>7}{'vRel':>6}{'src':>7}")
   for r in out:
-    for seg in r.segs:
-      ev = _phantom_in_seg(args.base, r.prefix, seg, args.min_decel, args.min_v, args.lead_sane)
-      if ev:
-        amin = min(e[1] for e in ev)
-        ev0 = ev[0]
-        print(f"{r.prefix}--{seg:<4}{len(ev):>8}{amin:>7.2f}{ev0[2]:>7.1f}"
-              f"{('nan' if np.isnan(ev0[3]) else f'{ev0[3]:.1f}'):>7}")
-        total += len(ev)
-        seg_hits += 1
-  print(f"\n{seg_hits} segments with phantom braking, {total} samples (a<={args.min_decel}, "
-        f"v>{args.min_v}, lead absent or >{args.lead_sane}m)")
+    rr = route_rows(args.base, r.prefix, r.segs)
+    for e in phantom_episodes(rr, args.min_decel, args.min_v, args.far_lead):
+      d, vr = e["dRel"], e["vRel"]
+      print(f"{r.prefix}--{e['seg']:<4}{e['t']:>6.1f}{e['dur']:>5.1f}{e['aEgoMin']:>7.2f}{e['v']:>6.1f}"
+            f"{('nan' if np.isnan(d) else f'{d:.1f}'):>7}{('nan' if np.isnan(vr) else f'{vr:.1f}'):>6}"
+            f"{SRC.get(e['src'], e['src']):>7}")
+      total += 1
+  print(f"\n{total} phantom episodes (engaged, aEgo<={args.min_decel}, v>{args.min_v}, "
+        f"no lead or opening lead >{args.far_lead}m, no stop within 15s)")
 
 
 def cmd_stats(args):
@@ -239,8 +226,9 @@ def cmd_stats(args):
 
   Columns: rows (follow-row count), eps (consecutive a<=-0.12 runs),
   minA (deepest decel), flips (brake-state transitions — pulse metric),
-  brk% (share of time braking), lead% (share with a radar lead), src
+  brk% (share of time braking), lead% (share with a lead), src
   (dominant source). Use flips + brk% to find pulse/yoyo segments.
+  Only rows with openpilot in control count; rows=0 = never engaged.
   """
   out = _routes(args)
   print(f"{'segment':<30}{'rows':>6}{'eps':>5}{'minA':>7}{'flips':>6}{'brk%':>6}{'lead%':>6} src")
@@ -259,7 +247,7 @@ def cmd_ttc(args):
 
   Default: ttc range and |ttc_dot| med/p90/p99/max (raw and lowpassed).
   Use to size controller deadbands — the gap-law deadband is 0.1 s/s, and
-  measured radar noise should sit well under it.
+  measured lead (vision-only on this car) dRel noise should sit well under it.
   --series: per-sample rows (t, v, dRel, ttc, dot_raw, dot_lp).
   """
   rows = follow_rows(args.base, args.route, _parse_segs(args.segs), fast=True)
@@ -290,25 +278,23 @@ def cmd_ttc(args):
 
 
 def cmd_stops(args):
-  """Print stop events per segment in scope.
+  """Print one row per stop in scope.
 
-  Columns: segment, stop count (vEgo crossing below 0.4 m/s), deepest aTarget
-  in the 1s before each stop (the "final bite" metric). Use dump --window
-  around a flagged stop to profile the approach.
+  A stop = vEgo crossing below 0.4 m/s from >= 0.4 on the previous row of the
+  same segment, with openpilot in control (longActive, no brakePressed) for
+  the last 3 s. Columns: segment, t (seg-relative s), aEgoMin (measured, the
+  felt "bite"), aTgtMin (requested). Use dump --window to profile a stop.
   """
   out = _routes(args)
-  print(f"{'segment':<30}{'stops':>6}{'deepest@stop':>13}")
+  n = skipped = 0
+  print(f"{'segment':<30}{'t':>6}{'aEgoMin':>9}{'aTgtMin':>9}")
   for r in out:
-    for seg in r.segs:
-      rows = follow_rows(args.base, r.prefix, [seg], fast=True)
-      if not rows:
-        continue
-      prof = stop_profile(rows)
-      if not prof:
-        continue
-      amin = min(p[1] for p in prof)
-      print(f"{r.prefix}--{seg:<4}{len(prof):>6}"
-            f"{('nan' if np.isnan(amin) else f'{amin:.3f}'):>13}")
+    stops, sk = stop_profile(route_rows(args.base, r.prefix, r.segs))
+    skipped += sk
+    for seg, t, ae, at in stops:
+      print(f"{r.prefix}--{seg:<4}{t:>6.1f}{ae:>9.2f}{at:>9.2f}")
+      n += 1
+  print(f"\n{n} stops with openpilot in control; {skipped} skipped (driver braking or long inactive)")
 
 
 def cmd_leadhealth(args):
@@ -347,7 +333,7 @@ def cmd_oscillation(args):
   bpTrans>0 at speed = the brake light IS flickering (the real annoyance).
   """
   out = _routes(args)
-  print(f"{'segment':<30}{'follS':>6}{'aCyc':>5}{'aAmp':>6}{'vrCyc':>6}{'vrAmp':>6}{'vPP':>5}{'dPP':>5}{'bpTr':>5}{'e2e%':>5}")
+  print(f"{'segment':<30}{'follS':>6}{'aCyc':>5}{'aAmp':>6}{'vrCyc':>6}{'vrAmp':>6}{'vPP':>6}{'dPP':>6}{'bpTr':>5}{'e2e%':>5}")
   for r in out:
     for seg in r.segs:
       rows = follow_rows(args.base, r.prefix, [seg], fast=True)
@@ -355,7 +341,7 @@ def cmd_oscillation(args):
         continue
       for w in oscillation_rows(rows):
         print(f"{r.prefix}--{seg:<4}{w['follow_s']:>6}{w['a_cycles']:>5}{w['a_amp']:>6}"
-              f"{w['vr_cycles']:>6}{w['vr_amp']:>6}{w['vEgo_pp']:>5}{w['dRel_pp']:>5}"
+              f"{w['vr_cycles']:>6}{w['vr_amp']:>6}{w['vEgo_pp']:>6}{w['dRel_pp']:>6}"
               f"{w['bp_trans']:>5}{w['e2e_pct']:>4.0f}")
 
 
@@ -390,17 +376,18 @@ def main():
   p_dump.set_defaults(fn=cmd_dump)
 
   p_phantom = sub.add_parser("phantom", help="find segments with phantom braking",
-                             description="Phantom = aTarget <= min-decel, v > min-v, no close "
-                                         "lead. dRel=nan at the event = true phantom; dRel 45-95m "
-                                         "= far-lead early braking.",
+                             description="Phantom episodes: engaged, aEgo <= min-decel, v > min-v, "
+                                         "no lead or an opening lead beyond far-lead, and no stop "
+                                         "within 15 s after. dRel=nan = no lead at all.",
                              formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_phantom.add_argument("--route", action="append", help="route prefix(es), repeatable or comma list; overrides time scope")
   p_phantom.add_argument("--recent", type=int, help="most recent N routes (default 3)")
   p_phantom.add_argument("--since", help="ISO time (naive = UTC)")
   p_phantom.add_argument("--until", help="ISO time (naive = UTC)")
   p_phantom.add_argument("--tz", type=int, help="input offset hours for naive --since/--until (e.g. -7 = PDT); display stays UTC")
-  p_phantom.add_argument("--min-decel", type=float, default=-0.6, help="brake threshold (default -0.6)")
+  p_phantom.add_argument("--min-decel", type=float, default=-0.6, help="measured aEgo threshold, m/s^2 (default -0.6)")
   p_phantom.add_argument("--min-v", type=float, default=2.0, help="min speed m/s (default 2.0)")
-  p_phantom.add_argument("--lead-sane", type=float, default=20.0, help="lead farther than this = no lead (m)")
+  p_phantom.add_argument("--far-lead", type=float, default=60.0, help="an opening lead farther than this (m) is not a reason to brake (default 60)")
   p_phantom.set_defaults(fn=cmd_phantom)
 
   p_stats = sub.add_parser("stats", help="per-segment metrics (episodes, flips, brake_pct, src)",
@@ -408,6 +395,7 @@ def main():
                                        "(pulse metric), brk% (time braking), lead%, dominant src. "
                                        "High flips+brk% = pulse/yoyo segments.",
                            formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_stats.add_argument("--route", action="append", help="route prefix(es), repeatable or comma list; overrides time scope")
   p_stats.add_argument("--recent", type=int, help="most recent N routes (default 3)")
   p_stats.add_argument("--since", help="ISO time (naive = UTC)")
   p_stats.add_argument("--until", help="ISO time (naive = UTC)")
@@ -425,9 +413,10 @@ def main():
   p_ttc.set_defaults(fn=cmd_ttc)
 
   p_stops = sub.add_parser("stops", help="stop events per segment + deepest decel before stop",
-                           description="Per segment: stop count (vEgo < 0.4 crossing) and deepest "
-                                       "aTarget in the 1s before each stop (the 'bite' metric).",
+                           description="One row per stop (vEgo < 0.4 crossing) with openpilot in "
+                                       "control for the last 3 s: min aEgo (felt bite) and min aTarget.",
                            formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_stops.add_argument("--route", action="append", help="route prefix(es), repeatable or comma list; overrides time scope")
   p_stops.add_argument("--recent", type=int, help="most recent N routes (default 3)")
   p_stops.add_argument("--since", help="ISO time (naive = UTC)")
   p_stops.add_argument("--until", help="ISO time (naive = UTC)")
@@ -441,6 +430,7 @@ def main():
                                             "late_detect% = failed stopped-lead detection "
                                             "(the RDFM signature).",
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_leadhealth.add_argument("--route", action="append", help="route prefix(es), repeatable or comma list; overrides time scope")
   p_leadhealth.add_argument("--recent", type=int, help="most recent N routes (default 3)")
   p_leadhealth.add_argument("--since", help="ISO time (naive = UTC)")
   p_leadhealth.add_argument("--until", help="ISO time (naive = UTC)")
@@ -455,6 +445,7 @@ def main():
                                      "light flickers; bpTr=0 + high cycles = regen-band "
                                      "bob (comfort only).",
                          formatter_class=argparse.RawDescriptionHelpFormatter)
+  p_osc.add_argument("--route", action="append", help="route prefix(es), repeatable or comma list; overrides time scope")
   p_osc.add_argument("--recent", type=int, help="most recent N routes (default 3)")
   p_osc.add_argument("--since", help="ISO time (naive = UTC)")
   p_osc.add_argument("--until", help="ISO time (naive = UTC)")
