@@ -85,6 +85,25 @@ Pitfalls that cost hours, all handled in the tool:
 - `Params.put` is non-blocking by default: a short script that exits right after `put` silently loses the write. Use
   `put(..., block=True)` (as the model manager does), then read the file back to confirm.
 
+## Planned: per-drive "Enable openpilot" (stock car by default)
+
+Goal: every drive starts fully stock (radar ACC + Pre-Collision/AEB untouched) so other drivers never need to change
+settings; one UI button enables openpilot with alpha long for that drive only (one-way until ignition off).
+Researched 2026-10-20 (code read on device, nothing built yet):
+- CarParams, DISABLE_RADAR and the radar knockout (`CarInterface.init()` -> `disable_ecu`) happen once per onroad
+  session at card start (`selfdrive/car/card.py`); panda safety mode is set once from CarParams. No live switch: the
+  practical switch is the existing `OnroadCycleRequested` restart (~1 s offroad, `hardwared.py`).
+- `OffroadMode` ("always offroad") gives a fully stock car but only resets at manager start (needs re-arming on
+  ignition off), and offroad nothing reads CAN, so the trigger must be a UI button. Toyota port parses no
+  SET/RES/main buttons; on RADAR_ACC cars not even the gap button.
+- Enabling mid-drive silences the radar at that moment (stock ACC/AEB drop): gate the button to standstill/low speed.
+- `CarInterface.deinit()` is never called anywhere; the radar returns only when Tester Present stops (UDS session
+  timeout). Before building, test parked: silence radar (alpha long onroad), then stop/unplug the comma, and check
+  stock ACC/PCS return without dash warnings or DTCs.
+- Sketch (~40-80 lines, fork-only): param that re-arms `OffroadMode` on ignition off; button clears it and sets a
+  per-drive alpha-long opt-in (cleared on ignition off, not on offroad, or the 1 s cycle wipes it); card reads
+  `AlphaLongitudinalEnabled or opt-in`. Existing fallback: `ToyotaEnforceStockLongitudinal` (global, not per drive).
+
 ## Repo and device
 
 - Personal branch: `staging-personal`. Upstream: `sunnypilot/sunnypilot` `master`. Sync by merging upstream into a `sync-YYYYMMDD` branch, then fast-forward.
