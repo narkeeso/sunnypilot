@@ -15,7 +15,7 @@ Fork-specific facts for agents working on narkeeso/sunnypilot. Read before reaso
 
 E2E is always on (upstream removed Experimental Mode and DEC). The planner takes the **min** of three candidates every frame: MPC (camera lead), cruise (set speed), and the model's `desiredAcceleration`. Fork layer, in order:
 
-1. `E2EBiasController.apply()` (`openpilot/sunnypilot/selfdrive/controls/lib/e2e_bias.py`): speed bias + Approach Grace on the model's accel.
+1. `E2EBiasController.apply()` (`openpilot/sunnypilot/selfdrive/controls/lib/e2e_bias.py`): speed bias on the model's accel.
 2. `E2EBiasController.apply_mpc()`: MPC braking-onset ramp, tied to the bias slider.
 3. Upstream `AccelBoost` (gas-override learned boost) stacks on top of the biased model accel.
 

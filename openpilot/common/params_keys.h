@@ -304,5 +304,4 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     {"LongitudinalE2EBias", {PERSISTENT | BACKUP, INT, "0"}},
     {"LongitudinalE2EBiasTunedFor", {PERSISTENT | BACKUP, STRING, "none"}},
-    {"LongitudinalApproachGrace", {PERSISTENT | BACKUP, INT, "0"}},
 };

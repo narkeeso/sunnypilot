@@ -22,17 +22,6 @@ sections:
     min: -20
     max: 20
     step: 1
-  - key: LongitudinalApproachGrace
-    widget: option
-    title: Approach Grace
-    description: "Extra early ease-off when traffic ahead is closing. 0 = model default (the speed hold yields fully to
-      the model on approaches). Higher = stronger early bleed on top of the model. 16 is the tuned sweet spot on this
-      car (RAV4 Hybrid). Only acts when E2E Speed Bias is non-zero."
-    enablement:
-    - $ref: '#/macros/longitudinal'
-    min: 0
-    max: 20
-    step: 1
   - key: DisengageOnAccelerator
     widget: toggle
     title: Disengage Cruise on Accelerator Pedal
