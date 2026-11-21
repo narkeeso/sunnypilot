@@ -63,6 +63,12 @@ class CruiseLayout(Widget):
                      "Eases off in curves and when sunnypilot slows or stops. Never goes past your set speed, and lead-car following still comes first."),
       param="AccelBoostSP")
 
+    self.dynamic_personality_toggle = toggle_item_sp(
+      title=tr("Dynamic Personality"),
+      description=tr("Switches driving personality with speed: Aggressive below the Standard speed, Standard up to the Relaxed speed, " +
+                     "Relaxed above it. Set the thresholds in SunnyLink. The steering wheel distance button overrides this until you disengage."),
+      param="AutoPersonalitySP")
+
     self.custom_acc_toggle = toggle_item_sp(
       title=tr("Custom ACC Speed Increments"),
       description="",
@@ -93,6 +99,7 @@ class CruiseLayout(Widget):
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.accel_boost_toggle,
+      self.dynamic_personality_toggle,
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
@@ -144,6 +151,7 @@ class CruiseLayout(Widget):
           self.icbm_toggle.show_description(True)
 
       self.accel_boost_toggle.action_item.set_enabled(has_long)
+      self.dynamic_personality_toggle.action_item.set_enabled(has_long)
 
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
@@ -161,6 +169,7 @@ class CruiseLayout(Widget):
       has_icbm = has_long = False
       self.icbm_toggle.action_item.set_enabled(False)
       self.accel_boost_toggle.action_item.set_enabled(False)
+      self.dynamic_personality_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
 
     show_custom_acc_desc = False

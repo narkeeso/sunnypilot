@@ -32,6 +32,7 @@ from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import ButtonStateTracker
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.sunnypilot.selfdrive.controls.lib.personality_ladder import PersonalityLadder
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -144,6 +145,17 @@ class SelfdriveD:
       max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params
     )
+    self.auto_personality = self.params.get_bool("AutoPersonalitySP")
+    self.personality_ladder = PersonalityLadder(
+      self.params.get("AutoPersonalityStandardMph", return_default=True),
+      self.params.get("AutoPersonalityRelaxedMph", return_default=True),
+    )
+    self.auto_personality_engaged = False
+    self.auto_personality_suspended = False
+    if self.auto_personality:
+      # selfdrived is only_onroad, so this is per drive: start tight and let the ladder climb
+      self.personality = log.LongitudinalPersonality.aggressive
+      self.params.put("LongitudinalPersonality", int(self.personality))
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -179,6 +191,31 @@ class SelfdriveD:
     self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
 
     self.button_state_tracker = ButtonStateTracker()
+
+  def update_auto_personality(self, CS):
+    if not self.active:
+      # per engagement: the next engage re-seeds and auto owns personality again
+      self.auto_personality_suspended = False
+      self.auto_personality_engaged = False
+      return
+
+    if not self.auto_personality or self.auto_personality_suspended:
+      return
+
+    if not self.auto_personality_engaged:
+      self.auto_personality_engaged = True
+      self.personality_ladder.seed(CS.vEgo)
+
+    self.personality_ladder.update(CS.vEgo)
+    # apply every frame, so the 0.1 s params_thread re-read cannot leave a stale tier
+    self.set_personality(self.personality_ladder.tier)
+
+  def set_personality(self, personality):
+    if self.personality == personality:
+      return
+    self.personality = personality
+    self.params.put('LongitudinalPersonality', int(personality))
+    self.events.add(EventName.personalityChanged)
 
   def update_events(self, CS):
     """Compute onroadEvents from carState"""
@@ -514,9 +551,10 @@ class SelfdriveD:
     # Decrement personality on distance button press
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
-        self.personality = (self.personality - 1) % 3
-        self.params.put('LongitudinalPersonality', self.personality)
-        self.events.add(EventName.personalityChanged)
+        self.auto_personality_suspended = True
+        self.set_personality((self.personality - 1) % 3)
+
+      self.update_auto_personality(CS)
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 
@@ -660,6 +698,11 @@ class SelfdriveD:
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+      self.auto_personality = self.params.get_bool("AutoPersonalitySP")
+      self.personality_ladder.set_thresholds(
+        self.params.get("AutoPersonalityStandardMph", return_default=True),
+        self.params.get("AutoPersonalityRelaxedMph", return_default=True),
+      )
 
       self.mads.read_params()
       time.sleep(0.1)

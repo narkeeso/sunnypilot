@@ -47,6 +47,32 @@ sections:
     description: "Adds a small push on top of sunnypilot's own acceleration, stronger in Aggressive and gentler in Relaxed. Eases off in curves and when sunnypilot slows or stops. Never goes past your set speed, and lead-car following still comes first."
     enablement:
     - $ref: '#/macros/longitudinal'
+  - key: AutoPersonalitySP
+    widget: toggle
+    title: Dynamic Personality
+    description: "Switches driving personality with speed: Aggressive below the Standard speed, Standard up to the Relaxed speed, Relaxed above it. Down-shifts happen 3 mph below each threshold. The steering wheel distance button overrides this until you disengage."
+    enablement:
+    - $ref: '#/macros/longitudinal'
+  - key: AutoPersonalityStandardMph
+    widget: option
+    title: Switch to Standard at (mph)
+    min: 20
+    max: 80
+    step: 5
+    visibility:
+    - type: param
+      key: AutoPersonalitySP
+      equals: true
+  - key: AutoPersonalityRelaxedMph
+    widget: option
+    title: Switch to Relaxed at (mph)
+    min: 20
+    max: 80
+    step: 5
+    visibility:
+    - type: param
+      key: AutoPersonalitySP
+      equals: true
   - key: IntelligentCruiseButtonManagement
     widget: toggle
     title: Intelligent Cruise Button Management (ICBM) (Alpha)
