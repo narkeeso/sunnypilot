@@ -628,19 +628,16 @@
                   "label": "Relaxed"
                 }
               ],
-              "enablement": [
+              "visibility": [
                 {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
+                  "type": "not",
+                  "condition": {
+                    "type": "param",
+                    "key": "AutoPersonalitySP",
+                    "equals": true
+                  }
                 }
-              ]
-            },
-            {
-              "key": "AccelBoostSP",
-              "widget": "toggle",
-              "title": "Acceleration Boost",
-              "description": "Adds a small push on top of sunnypilot's own acceleration, stronger in Aggressive and gentler in Relaxed. Eases off in curves and when sunnypilot slows or stops. Never goes past your set speed, and lead-car following still comes first.",
+              ],
               "enablement": [
                 {
                   "type": "capability",
@@ -688,6 +685,19 @@
                 {
                   "type": "param",
                   "key": "AutoPersonalitySP",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "AccelBoostSP",
+              "widget": "toggle",
+              "title": "Acceleration Boost",
+              "description": "Adds a small push on top of sunnypilot's own acceleration, stronger in Aggressive and gentler in Relaxed. Eases off in curves and when sunnypilot slows or stops. Never goes past your set speed, and lead-car following still comes first.",
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
                   "equals": true
                 }
               ]
