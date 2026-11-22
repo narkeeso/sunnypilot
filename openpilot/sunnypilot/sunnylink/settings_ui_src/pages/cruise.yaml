@@ -41,7 +41,6 @@ sections:
       label: Relaxed
     enablement:
     - $ref: '#/macros/longitudinal'
-    visibility:
     - type: not
       condition:
         type: param

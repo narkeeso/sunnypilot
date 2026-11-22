@@ -628,7 +628,12 @@
                   "label": "Relaxed"
                 }
               ],
-              "visibility": [
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                },
                 {
                   "type": "not",
                   "condition": {
@@ -636,13 +641,6 @@
                     "key": "AutoPersonalitySP",
                     "equals": true
                   }
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
                 }
               ]
             },
