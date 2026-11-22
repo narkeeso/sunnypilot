@@ -152,7 +152,7 @@ class SelfdriveD:
     )
     self.auto_personality_engaged = False
     self.auto_personality_suspended = False
-    if self.auto_personality:
+    if self.auto_personality and self.CP.openpilotLongitudinalControl:
       # selfdrived is only_onroad, so this is per drive: start tight and let the ladder climb
       self.personality = log.LongitudinalPersonality.aggressive
       self.params.put("LongitudinalPersonality", int(self.personality))

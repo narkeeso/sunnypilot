@@ -15,6 +15,7 @@ import os
 from collections.abc import Callable
 
 from openpilot.sunnypilot.sunnylink.capabilities import CAPABILITY_FIELDS, CAPABILITY_LABELS
+from openpilot.sunnypilot.selfdrive.controls.lib.personality_ladder import MIN_THRESHOLD_GAP_MPH
 
 SCHEMA_VERSION = "1.0"
 _DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,11 +60,8 @@ def _inject_dynamic_options(schema: dict) -> None:
   _walk_all_items(schema, visitor)
 
 
-PERSONALITY_MIN_GAP_MPH = 10
-
-
 def _inject_personality_bounds(schema: dict) -> None:
-  """Keep Relaxed at least PERSONALITY_MIN_GAP_MPH above Standard, so the Standard band cannot collapse."""
+  """Keep Relaxed at least MIN_THRESHOLD_GAP_MPH above Standard, so the Standard band cannot collapse."""
   try:
     # imported here so the schema tool still runs where libparams is not built
     from openpilot.common.params import Params
@@ -75,9 +73,9 @@ def _inject_personality_bounds(schema: dict) -> None:
 
   def visitor(item: dict) -> None:
     if item.get("key") == "AutoPersonalityStandardMph":
-      item["max"] = max(item.get("min", 20), min(item.get("max", 70), relaxed - PERSONALITY_MIN_GAP_MPH))
+      item["max"] = max(item.get("min", 20), min(item.get("max", 70), relaxed - MIN_THRESHOLD_GAP_MPH))
     elif item.get("key") == "AutoPersonalityRelaxedMph":
-      item["min"] = min(item.get("max", 80), max(item.get("min", 30), standard + PERSONALITY_MIN_GAP_MPH))
+      item["min"] = min(item.get("max", 80), max(item.get("min", 30), standard + MIN_THRESHOLD_GAP_MPH))
 
   _walk_all_items(schema, visitor)
 
