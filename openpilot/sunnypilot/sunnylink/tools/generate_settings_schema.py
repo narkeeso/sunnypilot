@@ -59,11 +59,35 @@ def _inject_dynamic_options(schema: dict) -> None:
   _walk_all_items(schema, visitor)
 
 
+PERSONALITY_MIN_GAP_MPH = 10
+
+
+def _inject_personality_bounds(schema: dict) -> None:
+  """Keep Relaxed at least PERSONALITY_MIN_GAP_MPH above Standard, so the Standard band cannot collapse."""
+  try:
+    # imported here so the schema tool still runs where libparams is not built
+    from openpilot.common.params import Params
+    params = Params()
+    standard = int(params.get("AutoPersonalityStandardMph", return_default=True))
+    relaxed = int(params.get("AutoPersonalityRelaxedMph", return_default=True))
+  except Exception:
+    return
+
+  def visitor(item: dict) -> None:
+    if item.get("key") == "AutoPersonalityStandardMph":
+      item["max"] = max(item.get("min", 20), min(item.get("max", 70), relaxed - PERSONALITY_MIN_GAP_MPH))
+    elif item.get("key") == "AutoPersonalityRelaxedMph":
+      item["min"] = min(item.get("max", 80), max(item.get("min", 30), standard + PERSONALITY_MIN_GAP_MPH))
+
+  _walk_all_items(schema, visitor)
+
+
 def _load_definition() -> dict:
   """Load settings_ui.json and inject dynamic options sourced from runtime data files."""
   with open(DEFINITION_PATH) as f:
     schema = json.load(f)
   _inject_dynamic_options(schema)
+  _inject_personality_bounds(schema)
   return schema
 
 

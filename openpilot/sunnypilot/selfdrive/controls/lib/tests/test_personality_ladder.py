@@ -121,9 +121,9 @@ class TestPersonalityLadder(unittest.TestCase):
     ladder.update(mph(65.0))
     assert ladder.tier == RELAXED
 
-  def test_relaxed_kept_above_standard(self):
+  def test_minimum_gap(self):
     ladder = PersonalityLadder(standard_mph=50, relaxed_mph=40)
-    assert (ladder.standard_mph, ladder.relaxed_mph) == (50, 51)
+    assert (ladder.standard_mph, ladder.relaxed_mph) == (50, 60)
 
 
 if __name__ == "__main__":

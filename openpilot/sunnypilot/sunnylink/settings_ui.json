@@ -662,7 +662,7 @@
               "widget": "option",
               "title": "Switch to Standard at (mph)",
               "min": 20,
-              "max": 80,
+              "max": 70,
               "step": 5,
               "visibility": [
                 {
@@ -676,7 +676,7 @@
               "key": "AutoPersonalityRelaxedMph",
               "widget": "option",
               "title": "Switch to Relaxed at (mph)",
-              "min": 20,
+              "min": 30,
               "max": 80,
               "step": 5,
               "visibility": [

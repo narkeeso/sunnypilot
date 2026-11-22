@@ -12,6 +12,7 @@ CONFIRM_FRAMES = 2
 
 DEFAULT_STANDARD_MPH = 40
 DEFAULT_RELAXED_MPH = 60
+MIN_THRESHOLD_GAP_MPH = 10
 
 
 class PersonalityLadder:
@@ -24,9 +25,9 @@ class PersonalityLadder:
     self.set_thresholds(standard_mph, relaxed_mph)
 
   def set_thresholds(self, standard_mph, relaxed_mph):
-    """Entry speeds in mph. Relaxed is kept above Standard, so a bad pair cannot invert the ladder."""
+    """Entry speeds in mph. Relaxed is kept a gap above Standard, so a bad pair cannot collapse the Standard band."""
     self.standard_mph = max(1, int(standard_mph))
-    self.relaxed_mph = max(self.standard_mph + 1, int(relaxed_mph))
+    self.relaxed_mph = max(self.standard_mph + MIN_THRESHOLD_GAP_MPH, int(relaxed_mph))
     self.tiers = (
       (0.0, log.LongitudinalPersonality.aggressive),
       (self.standard_mph, log.LongitudinalPersonality.standard),
