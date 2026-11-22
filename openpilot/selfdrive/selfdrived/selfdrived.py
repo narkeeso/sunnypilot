@@ -208,14 +208,15 @@ class SelfdriveD:
 
     self.personality_ladder.update(CS.vEgo)
     # apply every frame, so the 0.1 s params_thread re-read cannot leave a stale tier
-    self.set_personality(self.personality_ladder.tier)
+    self.set_personality(self.personality_ladder.tier, alert=False)
 
-  def set_personality(self, personality):
+  def set_personality(self, personality, alert=True):
     if self.personality == personality:
       return
     self.personality = personality
     self.params.put('LongitudinalPersonality', int(personality))
-    self.events.add(EventName.personalityChanged)
+    if alert:
+      self.events.add(EventName.personalityChanged)
 
   def update_events(self, CS):
     """Compute onroadEvents from carState"""
