@@ -4,12 +4,23 @@ Fork-specific facts for agents working on narkeeso/sunnypilot. Read before reaso
 
 ## The car is camera-only for longitudinal
 
-- Car: `TOYOTA_RAV4_TSS2_2023`, a radar-ACC Toyota (`ToyotaFlags.RADAR_ACC` in opendbc `toyota/values.py`).
+- Car: `TOYOTA_RAV4_TSS2_2023`. Static flags: `ToyotaFlags.RADAR_ACC | ToyotaFlags.ANGLE_CONTROL`
+  in opendbc `toyota/values.py`; `ToyotaTSS2PlatformConfig.init()` adds `TSS2 | NO_DSU | NO_STOP_TIMER`.
 - With alpha longitudinal on, openpilot **silences the radar** (`DISABLE_RADAR` flag → `disable_ecu(... addr=0x750, sub_addr=0xf, ENABLE_RX_DISABLE_TX)` in opendbc `toyota/interface.py`). Stock Toyota AEB / Pre-Collision is off while openpilot controls speed.
 - openpilot can't parse TSS2 radar-ACC tracks anyway (`radarUnavailable: True`).
 - So **the MPC follows the camera's lead estimate**, never radar. `radarState.leadOne.radar` is always False (0% radar-matched across all logged drives). Do not reason about radar tracks, radar `aLeadTau` (1.5), or "radar takes over" for this car.
 - Vision lead path: `get_RadarState_from_vision` in `openpilot/selfdrive/controls/radard.py`. `aLeadTau` is stock 0.3. Setting it to 0.0 (assume a braking lead keeps braking) was tried 2026-10-19 and reverted: no felt improvement, and it risks over-braking for leads slowing to turn off.
 - Without alpha long, Toyota's own radar ACC controls speed and openpilot only steers.
+
+## Lateral is angle (LTA), not torque
+
+`toyota/interface.py` sets `steerControlType = angle` and `ToyotaSafetyFlags.LTA` for `ANGLE_CONTROL` cars,
+with `steerActuatorDelay` 0.18 (torque path: 0.12) and `steerLimitTimer` 0.8 (0.4). `configure_torque_tune`
+is never called, so `lateralTuning` is unset and `controlsd` builds `LatControlAngle`, logging
+`lateralControlState.angleState` (`LateralAngleState`: `steeringAngleDeg` measured vs
+`steeringAngleDesiredDeg` commanded). Torque-tune, torque saturation limits and the steer-torque scale do not
+apply to this car. The Developer UI "desired steer" line printed the *measured* angle until sunnypilot #2099
+(`steeringAngleDesiredDeg`); `staging-personal` predates that fix.
 
 ## Longitudinal planner shape
 
